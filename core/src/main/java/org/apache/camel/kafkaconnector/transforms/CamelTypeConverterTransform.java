@@ -35,25 +35,30 @@ import org.apache.kafka.connect.transforms.util.SimpleConfig;
 public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> extends CamelTransformSupport<R> {
 
     public static final String FIELD_TARGET_TYPE_CONFIG = "target.type";
+    public static final String ADD_DELETE_FIELD_CONFIG = "add.delete.field";
+
     public static final ConfigDef CONFIG_DEF = new ConfigDef()
             .define(FIELD_TARGET_TYPE_CONFIG, ConfigDef.Type.CLASS, null, ConfigDef.Importance.HIGH,
-                    "The target field type to convert the value from, this is full qualified Java class, e.g: java.util.Map");
+                    "The target field type to convert the value from, this is full qualified Java class, e.g: java.util.Map")
+            .define(ADD_DELETE_FIELD_CONFIG, ConfigDef.Type.BOOLEAN, false, ConfigDef.Importance.MEDIUM,
+                    "Whether to add __delete field to the message based on HTTP DELETE method header");
 
     private static TypeConverter typeConverter;
     private Class<?> fieldTargetType;
+    private boolean addDeleteField;
 
     @Override
     public R apply(R record) {
         final Schema schema = operatingSchema(record);
         final Object value = operatingValue(record);
 
-        final Object convertedValue = convertValueWithCamelTypeConverter(value);
-        final Schema updatedSchema = getOrBuildRecordSchema(schema, convertedValue);
+        final Object convertedValue = convertValueWithCamelTypeConverter(value, record);
+        final Schema updatedSchema = getOrBuildRecordSchema(schema, convertedValue, record);
 
         return newRecord(record, updatedSchema, convertedValue);
     }
 
-    private Object convertValueWithCamelTypeConverter(final Object originalValue) {
+    private Object convertValueWithCamelTypeConverter(final Object originalValue, R record) {
         // Handle null values
         if (originalValue == null) {
             return null;
@@ -62,6 +67,12 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
         // Special handling for JSON string to Map conversion
         if (Map.class.isAssignableFrom(fieldTargetType) && originalValue instanceof String) {
             String stringValue = (String) originalValue;
+
+            // If empty string, create empty map and convert to struct
+            if (stringValue.isEmpty()) {
+                Map<String, Object> emptyMap = new java.util.LinkedHashMap<>();
+                return mapToStruct(emptyMap, record);
+            }
 
             // If not a JSON string, return as is
             if (!stringValue.startsWith("{")) {
@@ -72,7 +83,7 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
                 ObjectMapper mapper = new ObjectMapper();
                 Map<String, Object> mapValue = mapper.readValue((String) originalValue, Map.class);
                 // Convert Map to Struct
-                return mapToStruct(mapValue);
+                return mapToStruct(mapValue, record);
             } catch (Exception e) {
                 throw new DataException("Failed to parse JSON string to Map: " + e.getMessage(), e);
             }
@@ -85,19 +96,25 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
 
         // If the converted value is a Map, convert it to Struct
         if (convertedValue instanceof Map) {
-            return mapToStruct((Map<String, Object>) convertedValue);
+            return mapToStruct((Map<String, Object>) convertedValue, record);
         }
 
         return convertedValue;
     }
 
 
-    private Struct mapToStruct(Map<String, Object> map) {
+    private Struct mapToStruct(Map<String, Object> map, R record) {
         // First pass: Convert ISO 8601 date strings to Java Instant objects
         Map<String, Object> convertedMap = convertDateStringsInMap(map);
 
+        // Add __deleted field only if config is enabled and field doesn't already exist
+        if (addDeleteField && !convertedMap.containsKey("__deleted")) {
+            boolean isDelete = isDeleteOperation(record);
+            convertedMap.put("__deleted", isDelete);
+        }
+
         // Generate unique schema name to force schema registry updates when structure changes
-        String schemaName = generateDynamicSchemaName(convertedMap);
+        String schemaName = record.topic();
         SchemaBuilder schemaBuilder = SchemaBuilder.struct().name(schemaName);
 
         // Build schema and populate struct in single iteration
@@ -119,6 +136,12 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
         }
 
         return struct;
+    }
+
+    private boolean isDeleteOperation(R record) {
+        return record.headers() != null &&
+                record.headers().lastWithName("CamelHeader.CamelHttpMethod") != null &&
+                "DELETE".equals(record.headers().lastWithName("CamelHeader.CamelHttpMethod").value().toString().toUpperCase());
     }
 
     /**
@@ -157,35 +180,6 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
     /**
      * Try to parse a string as a date/time in multiple formats and convert to appropriate Java type.
      * Returns null if the string is not a valid date/time format.
-     *
-     * Converts to:
-     * - java.util.Date for full timestamps (Kafka Connect Timestamp schema)
-     * - java.time.LocalDate for date-only (Kafka Connect Date schema)
-     * - java.time.LocalTime for time-only (Kafka Connect Time schema)
-     *
-     * Supported formats:
-     * ISO 8601 Timestamps:
-     * - 2025-10-24T16:53:52Z
-     * - 2025-10-24T16:53:52.123Z
-     * - 2025-10-24T16:53:52+00:00
-     *
-     * Date formats (with separators to avoid int conflicts):
-     * - 2025-10-24 (yyyy-MM-dd)
-     * - 24-10-2025 (dd-MM-yyyy)
-     * - 10-24-2025 (MM-dd-yyyy)
-     * - 2025/10/24 (yyyy/MM/dd)
-     * - 24/10/2025 (dd/MM/yyyy)
-     * - 10/24/2025 (MM/dd/yyyy)
-     * - 24.10.2025 (dd.MM.yyyy)
-     * - 2025.10.24 (yyyy.MM.dd)
-     * - 24-Oct-2025 (dd-MMM-yyyy)
-     * - Oct 24, 2025 (MMM dd, yyyy)
-     * - October 24, 2025 (MMMM d, yyyy)
-     *
-     * Time formats:
-     * - 16:53:52 (HH:mm:ss)
-     * - 16:53:52.123 (HH:mm:ss.SSS)
-     *
      * NOTE: Formats without separators (ddMMyyyy, yyyyMMdd) are intentionally excluded
      * to avoid conflicts with actual integer values in the data.
      *
@@ -244,58 +238,9 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
         return null;
     }
 
-
-    /**
-     * Generate a unique schema name based on the map structure and data types.
-     * This forces Schema Registry to create a new schema version when the data structure changes.
-     *
-     * Examples:
-     * - {"id": 1, "name": "John"} → JsonData_i_s_v1
-     * - {"id": 1, "name": "John", "active": true} → JsonData_i_s_b_v1
-     *
-     * @param map the data map
-     * @return dynamic schema name with type signature
-     */
-    private String generateDynamicSchemaName(Map<String, Object> map) {
-        StringBuilder typeSignature = new StringBuilder("JsonData");
-
-        if (map == null || map.isEmpty()) {
-            return typeSignature.append("_empty_v1").toString();
-        }
-
-        // Sort keys for consistent schema names
-        map.keySet().stream()
-           .sorted()
-           .forEach(key -> {
-               Object value = map.get(key);
-               String typeCode = getTypeCode(value);
-               typeSignature.append("_").append(typeCode);
-           });
-
-        typeSignature.append("_v1");
-        return typeSignature.toString();
-    }
-
     /**
      * Get a single-character type code for a value.
      * Used to create unique schema names based on data types.
-     *
-     * Type codes:
-     * - s: String
-     * - i: Integer
-     * - l: Long
-     * - b: Boolean
-     * - d: Double
-     * - f: Float
-     * - h: Short
-     * - y: Byte
-     * - n: Number/BigDecimal
-     * - t: Timestamp (java.util.Date, java.time.*)
-     * - D: Date only (java.time.LocalDate, java.sql.Date)
-     * - T: Time only (java.time.LocalTime, java.sql.Time)
-     * - x: byte array
-     * - ?: Unknown/null
-     *
      * @param value the object value
      * @return type code character
      */
@@ -395,7 +340,7 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
         }
     }
 
-    private Schema getOrBuildRecordSchema(final Schema originalSchema, final Object value) {
+    private Schema getOrBuildRecordSchema(final Schema originalSchema, final Object value, R record) {
         // Handle null values
         if (value == null) {
             return originalSchema != null ? originalSchema : Schema.OPTIONAL_STRING_SCHEMA;
@@ -410,7 +355,7 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
             builder.optional();
         }
         if (originalSchema.defaultValue() != null) {
-            builder.defaultValue(convertValueWithCamelTypeConverter(originalSchema.defaultValue()));
+            builder.defaultValue(convertValueWithCamelTypeConverter(originalSchema.defaultValue(), record));
         }
 
         return builder.build();
@@ -429,6 +374,7 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
     public void configure(Map<String, ?> props) {
         final SimpleConfig config = new SimpleConfig(CONFIG_DEF, props);
         fieldTargetType = config.getClass(FIELD_TARGET_TYPE_CONFIG);
+        addDeleteField = config.getBoolean(ADD_DELETE_FIELD_CONFIG);
 
         if (fieldTargetType == null) {
             throw new ConfigException("Configuration 'target.type' can not be empty!");
