@@ -18,6 +18,7 @@ package org.apache.camel.kafkaconnector.transforms;
 
 import java.util.Map;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.camel.TypeConverter;
 import org.apache.camel.kafkaconnector.utils.SchemaHelper;
 import org.apache.kafka.common.config.ConfigDef;
@@ -25,6 +26,7 @@ import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.connect.connector.ConnectRecord;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
+import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.transforms.util.SchemaUtil;
 import org.apache.kafka.connect.transforms.util.SimpleConfig;
@@ -51,16 +53,83 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
     }
 
     private Object convertValueWithCamelTypeConverter(final Object originalValue) {
+        // Handle null values
+        if (originalValue == null) {
+            return null;
+        }
+
+        // Special handling for JSON string to Map conversion
+        if (Map.class.isAssignableFrom(fieldTargetType) && originalValue instanceof String) {
+            String stringValue = (String) originalValue;
+
+            // If not a JSON string, return as is
+            if (!stringValue.startsWith("{")) {
+                return stringValue;
+            }
+
+            try {
+                ObjectMapper mapper = new ObjectMapper();
+                Map<String, Object> mapValue = mapper.readValue((String) originalValue, Map.class);
+                // Convert Map to Struct
+                return mapToStruct(mapValue);
+            } catch (Exception e) {
+                throw new DataException("Failed to parse JSON string to Map: " + e.getMessage(), e);
+            }
+        }
         final Object convertedValue = typeConverter.tryConvertTo(fieldTargetType, originalValue);
 
         if (convertedValue == null) {
             throw new DataException(String.format("CamelTypeConverter was not able to convert value `%s` to target type of `%s`", originalValue, fieldTargetType.getSimpleName()));
         }
 
+        // If the converted value is a Map, convert it to Struct
+        if (convertedValue instanceof Map) {
+            return mapToStruct((Map<String, Object>) convertedValue);
+        }
+
         return convertedValue;
     }
 
+
+    private Struct mapToStruct(Map<String, Object> map) {
+        SchemaBuilder schemaBuilder = SchemaBuilder.struct().name("JsonData");
+
+        for (String key : map.keySet()) {
+            Object value = map.get(key);
+            if (value instanceof String) {
+                schemaBuilder.field(key, Schema.OPTIONAL_STRING_SCHEMA);
+            } else if (value instanceof Integer) {
+                schemaBuilder.field(key, Schema.OPTIONAL_INT32_SCHEMA);
+            } else if (value instanceof Long) {
+                schemaBuilder.field(key, Schema.OPTIONAL_INT64_SCHEMA);
+            } else if (value instanceof Boolean) {
+                schemaBuilder.field(key, Schema.OPTIONAL_BOOLEAN_SCHEMA);
+            } else if (value instanceof Double) {
+                schemaBuilder.field(key, Schema.OPTIONAL_FLOAT64_SCHEMA);
+            } else {
+                schemaBuilder.field(key, Schema.OPTIONAL_STRING_SCHEMA);
+            }
+        }
+
+        Schema schema = schemaBuilder.build();
+        Struct struct = new Struct(schema);
+
+        for (String key : map.keySet()) {
+            struct.put(key, map.get(key));
+        }
+
+        return struct;
+    }
+
     private Schema getOrBuildRecordSchema(final Schema originalSchema, final Object value) {
+        // Handle null values
+        if (value == null) {
+            return originalSchema != null ? originalSchema : Schema.OPTIONAL_STRING_SCHEMA;
+        }
+        // If value is a Struct, use its schema directly
+        if (value instanceof Struct) {
+            return ((Struct) value).schema();
+        }
         final SchemaBuilder builder = SchemaUtil.copySchemaBasics(originalSchema, SchemaHelper.buildSchemaBuilderForType(value));
 
         if (originalSchema.isOptional()) {
@@ -109,7 +178,19 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
 
         @Override
         protected Object operatingValue(R record) {
-            return record.key();
+            Object keyValue = record.key();
+
+            // If key is a JSON string, parse it
+            if (keyValue instanceof String && ((String) keyValue).startsWith("{")) {
+                try {
+                    ObjectMapper mapper = new ObjectMapper();
+                    return mapper.readValue((String) keyValue, Map.class);
+                } catch (Exception e) {
+                    throw new DataException("Failed to parse key JSON: " + e.getMessage(), e);
+                }
+            }
+
+            return keyValue;
         }
 
         @Override
