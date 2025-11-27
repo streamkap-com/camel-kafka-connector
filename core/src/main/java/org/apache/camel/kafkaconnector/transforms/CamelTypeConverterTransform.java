@@ -29,7 +29,6 @@ import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.DataException;
-import org.apache.kafka.connect.transforms.util.SchemaUtil;
 import org.apache.kafka.connect.transforms.util.SimpleConfig;
 
 public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> extends CamelTransformSupport<R> {
@@ -47,13 +46,16 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
     private Class<?> fieldTargetType;
     private boolean addDeleteField;
 
+    // Cache for nested struct schemas to ensure consistent schema instances
+    private final Map<String, Schema> schemaCache = new java.util.HashMap<>();
+
     @Override
     public R apply(R record) {
         final Schema schema = operatingSchema(record);
         final Object value = operatingValue(record);
 
         final Object convertedValue = convertValueWithCamelTypeConverter(value, record);
-        final Schema updatedSchema = getOrBuildRecordSchema(schema, convertedValue, record);
+        final Schema updatedSchema = getOrBuildRecordSchema(schema, convertedValue);
 
         return newRecord(record, updatedSchema, convertedValue);
     }
@@ -104,44 +106,181 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
 
 
     private Struct mapToStruct(Map<String, Object> map, R record) {
+        return mapToStruct(map, record, true);
+    }
+
+    private Struct mapToStruct(Map<String, Object> map, R record, boolean isTopLevel) {
         // First pass: Convert ISO 8601 date strings to Java Instant objects
         Map<String, Object> convertedMap = convertDateStringsInMap(map);
 
-        // Add __deleted field only if config is enabled and field doesn't already exist
-        if (addDeleteField && !convertedMap.containsKey("__deleted")) {
+        // Add __deleted field only if config is enabled and field doesn't already exist (only for top-level)
+        if (isTopLevel && addDeleteField && !convertedMap.containsKey("__deleted")) {
             boolean isDelete = isDeleteOperation(record);
             convertedMap.put("__deleted", isDelete);
         }
 
-        // Generate unique schema name to force schema registry updates when structure changes
-        String schemaName = record.topic();
+        // Generate schema name: use topic name for top-level, deterministic name for nested
+        String schemaName;
+        if (isTopLevel) {
+            schemaName = record.topic();
+        } else {
+            schemaName = generateNestedStructSchemaName(convertedMap);
+        }
+
+        // Check if we have a cached schema for this name
+        Schema cachedSchema = schemaCache.get(schemaName);
+        if (cachedSchema != null && schemaHasAllFields(cachedSchema, convertedMap)) {
+            Struct struct = new Struct(cachedSchema);
+            // Populate struct with values
+            for (Map.Entry<String, Object> entry : convertedMap.entrySet()) {
+                Object value = entry.getValue();
+                if (value instanceof Map && !(value instanceof java.util.Date)) {
+                    value = mapToStruct((Map<String, Object>) value, record, false);
+                } else if (value instanceof java.util.List) {
+                    value = convertListElements((java.util.List<?>) value, record);
+                }
+                if (cachedSchema.field(entry.getKey()) != null) {
+                    struct.put(entry.getKey(), value);
+                }
+            }
+            return struct;
+        }
+
+        // Build schema for the first time
         SchemaBuilder schemaBuilder = SchemaBuilder.struct().name(schemaName);
 
-        // Build schema and populate struct in single iteration
+        // Build schema - recursively process nested structures to get actual schemas
         for (Map.Entry<String, Object> entry : convertedMap.entrySet()) {
             String key = entry.getKey();
             Object value = entry.getValue();
 
-            // Determine schema based on value type
-            Schema fieldSchema = getFieldSchemaForType(value);
+            Schema fieldSchema;
+            // For nested maps, build the actual schema first by creating the struct
+            if (value instanceof Map && !(value instanceof java.util.Date)) {
+                Struct nestedStruct = mapToStruct((Map<String, Object>) value, record, false);
+                fieldSchema = nestedStruct.schema();
+            } else if (value instanceof java.util.List) {
+                java.util.List<?> list = (java.util.List<?>) value;
+                if (list.isEmpty()) {
+                    fieldSchema = SchemaBuilder.array(Schema.OPTIONAL_STRING_SCHEMA).optional().build();
+                } else {
+                    Object firstElement = list.get(0);
+                    if (firstElement instanceof Map && !(firstElement instanceof java.util.Date)) {
+                        Struct nestedStruct = mapToStruct((Map<String, Object>) firstElement, record, false);
+                        fieldSchema = SchemaBuilder.array(nestedStruct.schema()).optional().build();
+                    } else {
+                        Schema elementSchema = getFieldSchemaForType(firstElement);
+                        fieldSchema = SchemaBuilder.array(elementSchema).optional().build();
+                    }
+                }
+            } else {
+                fieldSchema = getFieldSchemaForType(value);
+            }
+
             schemaBuilder.field(key, fieldSchema);
         }
 
         Schema schema = schemaBuilder.build();
+        schemaCache.put(schemaName, schema);
+
         Struct struct = new Struct(schema);
 
         // Populate struct with values
         for (Map.Entry<String, Object> entry : convertedMap.entrySet()) {
-            struct.put(entry.getKey(), entry.getValue());
+            Object value = entry.getValue();
+            // Recursively convert nested Maps to Structs (pass false for isTopLevel)
+            if (value instanceof Map && !(value instanceof java.util.Date)) {
+                value = mapToStruct((Map<String, Object>) value, record, false);
+            }
+            // Convert list elements but keep as List
+            else if (value instanceof java.util.List) {
+                value = convertListElements((java.util.List<?>) value, record);
+            }
+            struct.put(entry.getKey(), value);
         }
 
         return struct;
+    }
+
+    /**
+     * Check if a cached schema has all the fields needed for the current map.
+     * Used to validate if we can reuse a cached schema.
+     *
+     * @param schema the cached schema
+     * @param map the current map being processed
+     * @return true if schema has all fields from map
+     */
+    private boolean schemaHasAllFields(Schema schema, Map<String, Object> map) {
+        for (String key : map.keySet()) {
+            if (schema.field(key) == null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Convert elements within a Java List recursively.
+     * Keeps the list structure intact (doesn't convert to array).
+     * Recursively handles nested objects and arrays.
+     *
+     * @param list the list to process
+     * @param record the source record (for nested struct conversion)
+     * @return the list with converted elements
+     */
+    private java.util.List<?> convertListElements(java.util.List<?> list, R record) {
+        if (list == null || list.isEmpty()) {
+            return list;
+        }
+
+        java.util.List<Object> result = new java.util.ArrayList<>(list.size());
+        for (Object item : list) {
+            // Recursively convert nested Maps to Structs (nested, not top-level)
+            if (item instanceof Map && !(item instanceof java.util.Date)) {
+                result.add(mapToStruct((Map<String, Object>) item, record, false));
+            }
+            // Recursively convert nested Lists
+            else if (item instanceof java.util.List) {
+                result.add(convertListElements((java.util.List<?>) item, record));
+            }
+            else {
+                result.add(item);
+            }
+        }
+        return result;
     }
 
     private boolean isDeleteOperation(R record) {
         return record.headers() != null &&
                 record.headers().lastWithName("CamelHeader.CamelHttpMethod") != null &&
                 "DELETE".equals(record.headers().lastWithName("CamelHeader.CamelHttpMethod").value().toString().toUpperCase());
+    }
+
+    /**
+     * Generate a deterministic schema name for nested structs based on their field names.
+     * This ensures the same schema is used for the same structure across multiple messages.
+     *
+     * Example: For {"name": "John", "age": 30}, generates "NestedStruct_age_name"
+     *
+     * @param map the nested map
+     * @return deterministic schema name based on sorted field names
+     */
+    private String generateNestedStructSchemaName(Map<String, Object> map) {
+        if (map == null || map.isEmpty()) {
+            return "NestedStruct_empty";
+        }
+
+        // Sort field names for consistency
+        java.util.List<String> sortedKeys = new java.util.ArrayList<>(map.keySet());
+        java.util.Collections.sort(sortedKeys);
+
+        // Build schema name from sorted field names
+        StringBuilder nameBuilder = new StringBuilder("NestedStruct");
+        for (String key : sortedKeys) {
+            nameBuilder.append("_").append(key);
+        }
+
+        return nameBuilder.toString();
     }
 
     /**
@@ -285,6 +424,28 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
             return Schema.OPTIONAL_STRING_SCHEMA;
         }
 
+        // Handle arrays
+        if (value instanceof java.util.List) {
+            java.util.List<?> list = (java.util.List<?>) value;
+            if (list.isEmpty()) {
+                // Empty array - default to array of strings
+                return SchemaBuilder.array(Schema.OPTIONAL_STRING_SCHEMA).optional().build();
+            }
+            // Get schema from first element
+            Object firstElement = list.get(0);
+            Schema elementSchema = getFieldSchemaForType(firstElement);
+            return SchemaBuilder.array(elementSchema).optional().build();
+        }
+
+        // Handle nested Maps (nested JSON objects)
+        // Return a simple struct schema with placeholder - the actual schema will come from mapToStruct()
+        if (value instanceof Map && !(value instanceof java.util.Date)) {
+            Map<String, Object> nestedMap = (Map<String, Object>) value;
+            String schemaName = generateNestedStructSchemaName(nestedMap);
+            // Just return a struct schema with the correct name - fields will be validated at runtime
+            return SchemaBuilder.struct().name(schemaName).optional().build();
+        }
+
         // Use instanceof pattern matching for type checking (Java 16+)
         if (value instanceof String) {
             return Schema.OPTIONAL_STRING_SCHEMA;
@@ -340,25 +501,24 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
         }
     }
 
-    private Schema getOrBuildRecordSchema(final Schema originalSchema, final Object value, R record) {
+    private Schema getOrBuildRecordSchema(final Schema originalSchema, final Object value) {
         // Handle null values
         if (value == null) {
             return originalSchema != null ? originalSchema : Schema.OPTIONAL_STRING_SCHEMA;
         }
-        // If value is a Struct, use its schema directly
+
+        // If value is a Struct, use its schema directly - this is the actual schema being used
         if (value instanceof Struct) {
             return ((Struct) value).schema();
         }
-        final SchemaBuilder builder = SchemaUtil.copySchemaBasics(originalSchema, SchemaHelper.buildSchemaBuilderForType(value));
 
-        if (originalSchema.isOptional()) {
-            builder.optional();
-        }
-        if (originalSchema.defaultValue() != null) {
-            builder.defaultValue(convertValueWithCamelTypeConverter(originalSchema.defaultValue(), record));
+        // If value is already properly typed, return the original schema
+        if (originalSchema != null) {
+            return originalSchema;
         }
 
-        return builder.build();
+        // Build schema from the value type if no original schema exists
+        return SchemaHelper.buildSchemaBuilderForType(value).optional().build();
     }
 
     @Override
