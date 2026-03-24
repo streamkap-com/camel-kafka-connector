@@ -26,6 +26,27 @@ public class CamelNettyhttpSourceConnectorConfig
         extends
             CamelSourceConnectorConfig {
 
+    // Payload routing configuration
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_ENABLED_CONF = "camel.source.payload.router.enabled";
+    public static final Boolean CAMEL_SOURCE_PAYLOAD_ROUTER_ENABLED_DEFAULT = false;
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_ENABLED_DOC = "Whether to enable payload-based routing. When enabled, the connector inspects the JSON payload to determine target topics.";
+
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_CONF = "camel.source.payload.router.type";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_DEFAULT = null;
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_DOC = "The provider type for payload routing strategy. Supported values: zendesk. Each provider has built-in knowledge of its webhook payload structures.";
+
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_TOPIC_PREFIX_CONF = "camel.source.payload.router.topic.prefix";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_TOPIC_PREFIX_DEFAULT = "";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_TOPIC_PREFIX_DOC = "Topic prefix applied to all strategy-produced topic suffixes. For example, 'zendesk_' prefix with 'ticket_events' suffix produces 'zendesk_ticket_events'.";
+
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_UNKNOWN_BEHAVIOR_CONF = "camel.source.payload.router.unknown.type.behavior";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_UNKNOWN_BEHAVIOR_DEFAULT = "DEFAULT_TOPIC";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_UNKNOWN_BEHAVIOR_DOC = "Behavior when an unknown event type is encountered. Valid values: DEFAULT_TOPIC, SKIP, FAIL.";
+
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_DEFAULT_TOPIC_CONF = "camel.source.payload.router.unknown.type.default.topic";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_DEFAULT_TOPIC_DEFAULT = "unknown";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_DEFAULT_TOPIC_DOC = "The default topic to route unknown event types to when unknown.type.behavior is DEFAULT_TOPIC.";
+
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_CONF = "camel.source.path.protocol";
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DOC = "The protocol to use which is either http, https or proxy (consumer only). One of: [http] [https] [proxy]";
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DEFAULT = null;
@@ -459,6 +480,13 @@ public class CamelNettyhttpSourceConnectorConfig
 
     public static ConfigDef conf() {
         ConfigDef conf = new ConfigDef(CamelSourceConnectorConfig.conf());
+        // Payload routing config
+        conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_PAYLOAD_ROUTER_ENABLED_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_ENABLED_DOC);
+        conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_DOC);
+        conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_TOPIC_PREFIX_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_PAYLOAD_ROUTER_TOPIC_PREFIX_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_TOPIC_PREFIX_DOC);
+        conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_UNKNOWN_BEHAVIOR_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_PAYLOAD_ROUTER_UNKNOWN_BEHAVIOR_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_PAYLOAD_ROUTER_UNKNOWN_BEHAVIOR_DOC);
+        conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_DEFAULT_TOPIC_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_PAYLOAD_ROUTER_DEFAULT_TOPIC_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_PAYLOAD_ROUTER_DEFAULT_TOPIC_DOC);
+        // Netty-HTTP specific config
         conf.define(CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DEFAULT, ConfigDef.Importance.HIGH, CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DOC);
         conf.define(CAMEL_SOURCE_NETTYHTTP_PATH_HOST_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_NETTYHTTP_PATH_HOST_DEFAULT, ConfigDef.Importance.HIGH, CAMEL_SOURCE_NETTYHTTP_PATH_HOST_DOC);
         conf.define(CAMEL_SOURCE_NETTYHTTP_PATH_PORT_CONF, ConfigDef.Type.INT, CAMEL_SOURCE_NETTYHTTP_PATH_PORT_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_NETTYHTTP_PATH_PORT_DOC);

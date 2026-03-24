@@ -24,6 +24,8 @@ import org.apache.kafka.connect.source.SourceRecord;
 
 public class CamelSourceRecord extends SourceRecord {
     private Integer claimCheck;
+    private String eventType;
+    private String sourceExchangeId;
 
     public CamelSourceRecord(Map<String, ?> sourcePartition, Map<String, ?> sourceOffset, String topic, Integer partition, Schema valueSchema, Object value) {
         super(sourcePartition, sourceOffset, topic, partition, valueSchema, value);
@@ -55,5 +57,21 @@ public class CamelSourceRecord extends SourceRecord {
 
     public void setClaimCheck(Integer claimCheck) {
         this.claimCheck = claimCheck;
+    }
+
+    public String getEventType() {
+        return eventType;
+    }
+
+    public void setEventType(String eventType) {
+        this.eventType = eventType;
+    }
+
+    public String getSourceExchangeId() {
+        return sourceExchangeId;
+    }
+
+    public void setSourceExchangeId(String sourceExchangeId) {
+        this.sourceExchangeId = sourceExchangeId;
     }
 }

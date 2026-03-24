@@ -45,7 +45,7 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
     private static TypeConverter typeConverter;
     private Class<?> fieldTargetType;
     private boolean addDeleteField;
-
+    
     // Cache for nested struct schemas to ensure consistent schema instances
     private final Map<String, Schema> schemaCache = new java.util.HashMap<>();
 

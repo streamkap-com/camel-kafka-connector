@@ -60,18 +60,18 @@ public class CamelSourceTask extends SourceTask {
     private static final String DEFAULT_KAMELET_CKC_SOURCE = "kamelet:ckcSource";
 
     private CamelKafkaConnectMain cms;
-    private PollingConsumer consumer;
-    private String[] topics;
-    private Long maxBatchPollSize;
-    private Long maxPollDuration;
+    protected PollingConsumer consumer;
+    protected String[] topics;
+    protected Long maxBatchPollSize;
+    protected Long maxPollDuration;
     private Integer maxNotCommittedRecords;
-    private String camelMessageHeaderKey;
-    private LoggingLevel loggingLevel = LoggingLevel.OFF;
-    private Exchange[] exchangesWaitingForAck;
+    protected String camelMessageHeaderKey;
+    protected LoggingLevel loggingLevel = LoggingLevel.OFF;
+    protected Exchange[] exchangesWaitingForAck;
     //the assumption is that at most 1 thread is running poll() method and at most 1 thread is running commitRecord()
-    private SpscArrayQueue<Integer> freeSlots;
-    private boolean mapProperties;
-    private boolean mapHeaders;
+    protected SpscArrayQueue<Integer> freeSlots;
+    protected boolean mapProperties;
+    protected boolean mapHeaders;
 
 
     @Override
@@ -188,7 +188,7 @@ public class CamelSourceTask extends SourceTask {
         return DEFAULT_KAMELET_CKC_SOURCE;
     }
 
-    private long remaining(long startPollEpochMilli, long maxPollDuration)  {
+    protected long remaining(long startPollEpochMilli, long maxPollDuration)  {
         return maxPollDuration - (Instant.now().toEpochMilli() - startPollEpochMilli);
     }
 
@@ -239,7 +239,7 @@ public class CamelSourceTask extends SourceTask {
                         setAdditionalHeaders(camelRecord, exchange.getMessage().getHeaders(), HEADER_CAMEL_PREFIX);
                     }
                 }
-                
+
                 if (mapProperties) {
                     if (exchange.hasProperties()) {
                         setAdditionalHeaders(camelRecord, exchange.getProperties(), PROPERTY_CAMEL_PREFIX);
@@ -330,7 +330,7 @@ public class CamelSourceTask extends SourceTask {
         return System.currentTimeMillis();
     }
 
-    private void setAdditionalHeaders(SourceRecord record, Map<String, Object> map, String prefix) {
+    protected void setAdditionalHeaders(SourceRecord record, Map<String, Object> map, String prefix) {
 
         for (Map.Entry<String, Object> entry : map.entrySet()) {
             String key = entry.getKey();
