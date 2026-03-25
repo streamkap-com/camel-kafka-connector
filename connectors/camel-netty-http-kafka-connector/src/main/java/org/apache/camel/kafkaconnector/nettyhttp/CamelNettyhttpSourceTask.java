@@ -18,12 +18,16 @@ package org.apache.camel.kafkaconnector.nettyhttp;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import org.apache.camel.Exchange;
 import org.apache.camel.StreamCache;
@@ -40,6 +44,8 @@ import org.apache.camel.kafkaconnector.utils.TaskHelper;
 import org.apache.camel.support.UnitOfWorkHelper;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.data.SchemaBuilder;
+import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.slf4j.Logger;
@@ -87,10 +93,24 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
                         + ": " + unknownBehaviorStr + ". Valid values: DEFAULT_TOPIC, SKIP, FAIL");
             }
 
+            // Advanced routing config
+            String fanoutFieldsStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FANOUT_FIELDS_CONF);
+            Set<String> fanoutFields = (fanoutFieldsStr == null || fanoutFieldsStr.trim().isEmpty())
+                    ? Collections.emptySet()
+                    : Arrays.stream(fanoutFieldsStr.split(","))
+                            .map(String::trim)
+                            .filter(s -> !s.isEmpty())
+                            .collect(Collectors.toSet());
+            boolean flattenDetail = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_CONF);
+            String flattenDetailPrefix = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_CONF);
+            boolean includeEvent = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_CONF);
+
             PayloadRoutingStrategy strategy = PayloadRouter.createStrategy(routerType);
             strategy.configure(topicPrefix, unknownBehavior, defaultTopic);
+            strategy.configureAdvanced(fanoutFields, flattenDetail, flattenDetailPrefix, includeEvent);
             payloadRouter = new PayloadRouter(strategy);
-            LOG.info("Payload routing enabled with type '{}' and topic prefix '{}'", routerType, topicPrefix);
+            LOG.info("Payload routing enabled with type '{}', topic prefix '{}', fanout fields: {}, flatten detail: {}",
+                    routerType, topicPrefix, fanoutFields, flattenDetail);
         }
     }
 
@@ -156,8 +176,28 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             for (RoutedRecord routed : routedRecords) {
                 Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(routed.getPayload());
 
+                // Build struct key from routed record's key fields, or fall back to header-based key
+                Object recordKey;
+                Schema recordKeySchema;
+                if (routed.hasKey()) {
+                    Map<String, Object> keyFields = routed.getKeyFields();
+                    SchemaBuilder keySchemaBuilder = SchemaBuilder.struct().name(routed.getTopic() + "_key");
+                    for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
+                        keySchemaBuilder.field(kf.getKey(), SchemaHelper.buildSchemaBuilderForType(kf.getValue()));
+                    }
+                    recordKeySchema = keySchemaBuilder.build();
+                    Struct keyStruct = new Struct(recordKeySchema);
+                    for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
+                        keyStruct.put(kf.getKey(), kf.getValue());
+                    }
+                    recordKey = keyStruct;
+                } else {
+                    recordKey = messageHeaderKey;
+                    recordKeySchema = recordKey != null ? SchemaHelper.buildSchemaBuilderForType(recordKey) : null;
+                }
+
                 CamelSourceRecord camelRecord = new CamelSourceRecord(sourcePartition, sourceOffset,
-                        routed.getTopic(), null, messageKeySchema, messageHeaderKey,
+                        routed.getTopic(), null, recordKeySchema, recordKey,
                         bodySchema, routed.getPayload(), timestamp);
 
                 camelRecord.setEventType(routed.getEventType());

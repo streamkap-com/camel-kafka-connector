@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,11 +30,26 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
     private String defaultTopic = "unknown";
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    // Advanced config
+    private Set<String> fanoutFields = Collections.emptySet();
+    private boolean flattenDetail = false;
+    private String flattenDetailPrefix = "detail_";
+    private boolean includeEvent = true;
+
     @Override
     public void configure(String topicPrefix, UnknownTypeBehavior unknownTypeBehavior, String defaultTopic) {
         this.topicPrefix = topicPrefix != null ? topicPrefix : "";
         this.unknownTypeBehavior = unknownTypeBehavior != null ? unknownTypeBehavior : UnknownTypeBehavior.DEFAULT_TOPIC;
         this.defaultTopic = defaultTopic != null ? defaultTopic : "unknown";
+    }
+
+    @Override
+    public void configureAdvanced(Set<String> fanoutFields, boolean flattenDetail,
+                                  String flattenDetailPrefix, boolean includeEvent) {
+        this.fanoutFields = fanoutFields != null ? fanoutFields : Collections.emptySet();
+        this.flattenDetail = flattenDetail;
+        this.flattenDetailPrefix = flattenDetailPrefix != null ? flattenDetailPrefix : "detail_";
+        this.includeEvent = includeEvent;
     }
 
     @Override
@@ -45,7 +61,6 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
             return handleUnknownType(payload, "<missing>");
         }
 
-        // Parse Zendesk event type: "zen:event-type:DOMAIN.EVENT_NAME"
         String domain = extractDomain(eventType);
         if (domain == null) {
             return handleUnknownType(payload, eventType);
@@ -53,11 +68,23 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
 
         switch (domain) {
             case "ticket":
-                return routeTicketEvent(payload, eventType);
+                return routeTicketEvent(payload, eventType, domain);
             case "user":
-                return routeUserEvent(payload, eventType);
+                return routeUserEvent(payload, eventType, domain);
             case "organization":
-                return routeOrganizationEvent(payload, eventType);
+                return routeOrganizationEvent(payload, eventType, domain);
+            case "article":
+                return routeDetailIdEvent(payload, eventType, domain, "article_events", "article_id");
+            case "community_post":
+                return routeDetailIdEvent(payload, eventType, domain, "community_post_events", "community_post_id");
+            case "messaging_ticket":
+                return routeDetailIdEvent(payload, eventType, domain, "messaging_events", "messaging_ticket_id");
+            case "agent":
+                return routeAgentEvent(payload, eventType, domain);
+            case "omnichannel_config":
+                return routeAccountIdEvent(payload, eventType, "omnichannel_config_events");
+            case "messaging_live_metrics":
+                return routeAccountIdEvent(payload, eventType, "messaging_metrics_events");
             default:
                 return handleUnknownType(payload, eventType);
         }
@@ -66,7 +93,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
     // --- Ticket Events ---
 
     @SuppressWarnings("unchecked")
-    private List<RoutedRecord> routeTicketEvent(Map<String, Object> payload, String eventType) {
+    private List<RoutedRecord> routeTicketEvent(Map<String, Object> payload, String eventType, String domain) {
         List<RoutedRecord> records = new ArrayList<>();
         Map<String, Object> detail = getMapField(payload, DETAIL_FIELD);
 
@@ -74,75 +101,99 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
             throw new PayloadRoutingException("Zendesk ticket event missing required field: detail.id");
         }
 
-        // Main ticket event record (full payload)
-        records.add(createRecord("ticket_events", payload, eventType));
-
         Object ticketId = detail.get("id");
+        Object eventId = payload.get("id");
 
-        // Split tags array
-        Object tags = detail.get("tags");
-        if (tags instanceof List) {
-            for (Object tag : (List<?>) tags) {
-                Map<String, Object> tagRecord = new LinkedHashMap<>();
-                if (tag instanceof Map) {
-                    tagRecord.putAll((Map<String, Object>) tag);
-                } else {
-                    tagRecord.put("value", tag);
-                }
-                tagRecord.put(CONTEXT_PREFIX + "ticket_id", ticketId);
-                records.add(createRecord("ticket_tags", tagRecord, eventType));
-            }
-        }
+        // Main ticket event — key: {ticket_id}
+        Map<String, Object> mainPayload = buildMainPayload(payload, domain);
+        records.add(createRecord("ticket_events", mainPayload, eventType, keyOf("ticket_id", ticketId)));
 
-        // Split custom_fields array
-        Object customFields = detail.get("custom_fields");
-        if (customFields instanceof List) {
-            for (Object field : (List<?>) customFields) {
-                if (field instanceof Map) {
-                    Map<String, Object> fieldRecord = new LinkedHashMap<>((Map<String, Object>) field);
-                    fieldRecord.put(CONTEXT_PREFIX + "ticket_id", ticketId);
-                    records.add(createRecord("ticket_custom_fields", fieldRecord, eventType));
-                }
-            }
-        }
-
-        // Handle comment_added events - extract comment from event object
-        String eventName = extractEventName(eventType);
-        if ("comment_added".equals(eventName)) {
-            Map<String, Object> event = getMapField(payload, EVENT_FIELD);
-            if (event != null) {
-                Object comment = event.get("comment");
-                if (comment instanceof Map) {
-                    Map<String, Object> commentRecord = new LinkedHashMap<>((Map<String, Object>) comment);
-                    commentRecord.put(CONTEXT_PREFIX + "ticket_id", ticketId);
-                    if (detail.get("subject") != null) {
-                        commentRecord.put(CONTEXT_PREFIX + "ticket_subject", detail.get("subject"));
+        // Fan-out: tags — key: {ticket_id, value}
+        if (shouldFanout(domain, "tags")) {
+            Object tags = detail.get("tags");
+            if (tags instanceof List) {
+                for (Object tag : (List<?>) tags) {
+                    Map<String, Object> tagRecord = new LinkedHashMap<>();
+                    Object tagValue;
+                    if (tag instanceof Map) {
+                        tagRecord.putAll((Map<String, Object>) tag);
+                        tagValue = ((Map<?, ?>) tag).get("value");
+                    } else {
+                        tagRecord.put("value", tag);
+                        tagValue = tag;
                     }
-                    records.add(createRecord("ticket_comments", commentRecord, eventType));
+                    addFanoutContext(tagRecord, eventId, "ticket_id", ticketId);
+                    records.add(createRecord("ticket_tags", tagRecord, eventType,
+                            keyOf("ticket_id", ticketId, "value", tagValue)));
                 }
             }
         }
 
-        // Split collaborators array
-        Object collaborators = detail.get("collaborators");
-        if (collaborators instanceof List) {
-            for (Object collab : (List<?>) collaborators) {
-                if (collab instanceof Map) {
-                    Map<String, Object> collabRecord = new LinkedHashMap<>((Map<String, Object>) collab);
-                    collabRecord.put(CONTEXT_PREFIX + "ticket_id", ticketId);
-                    records.add(createRecord("ticket_collaborators", collabRecord, eventType));
+        // Fan-out: custom_fields — key: {ticket_id, id}
+        if (shouldFanout(domain, "custom_fields")) {
+            Object customFields = detail.get("custom_fields");
+            if (customFields instanceof List) {
+                for (Object field : (List<?>) customFields) {
+                    if (field instanceof Map) {
+                        Map<String, Object> fieldRecord = new LinkedHashMap<>((Map<String, Object>) field);
+                        addFanoutContext(fieldRecord, eventId, "ticket_id", ticketId);
+                        Object fieldId = ((Map<?, ?>) field).get("id");
+                        records.add(createRecord("ticket_custom_fields", fieldRecord, eventType,
+                                keyOf("ticket_id", ticketId, "id", fieldId)));
+                    }
                 }
             }
         }
 
-        // Split followers array
-        Object followers = detail.get("followers");
-        if (followers instanceof List) {
-            for (Object follower : (List<?>) followers) {
-                if (follower instanceof Map) {
-                    Map<String, Object> followerRecord = new LinkedHashMap<>((Map<String, Object>) follower);
-                    followerRecord.put(CONTEXT_PREFIX + "ticket_id", ticketId);
-                    records.add(createRecord("ticket_followers", followerRecord, eventType));
+        // Fan-out: comments — key: {id} (comment's own ID)
+        if (shouldFanout(domain, "comments")) {
+            String eventName = extractEventName(eventType);
+            if ("comment_added".equals(eventName)) {
+                Map<String, Object> event = getMapField(payload, EVENT_FIELD);
+                if (event != null) {
+                    Object comment = event.get("comment");
+                    if (comment instanceof Map) {
+                        Map<String, Object> commentRecord = new LinkedHashMap<>((Map<String, Object>) comment);
+                        addFanoutContext(commentRecord, eventId, "ticket_id", ticketId);
+                        if (detail.get("subject") != null) {
+                            commentRecord.put(CONTEXT_PREFIX + "ticket_subject", detail.get("subject"));
+                        }
+                        Object commentId = ((Map<?, ?>) comment).get("id");
+                        records.add(createRecord("ticket_comments", commentRecord, eventType,
+                                keyOf("id", commentId)));
+                    }
+                }
+            }
+        }
+
+        // Fan-out: collaborators — key: {ticket_id, id}
+        if (shouldFanout(domain, "collaborators")) {
+            Object collaborators = detail.get("collaborators");
+            if (collaborators instanceof List) {
+                for (Object collab : (List<?>) collaborators) {
+                    if (collab instanceof Map) {
+                        Map<String, Object> collabRecord = new LinkedHashMap<>((Map<String, Object>) collab);
+                        addFanoutContext(collabRecord, eventId, "ticket_id", ticketId);
+                        Object collabId = ((Map<?, ?>) collab).get("id");
+                        records.add(createRecord("ticket_collaborators", collabRecord, eventType,
+                                keyOf("ticket_id", ticketId, "id", collabId)));
+                    }
+                }
+            }
+        }
+
+        // Fan-out: followers — key: {ticket_id, id}
+        if (shouldFanout(domain, "followers")) {
+            Object followers = detail.get("followers");
+            if (followers instanceof List) {
+                for (Object follower : (List<?>) followers) {
+                    if (follower instanceof Map) {
+                        Map<String, Object> followerRecord = new LinkedHashMap<>((Map<String, Object>) follower);
+                        addFanoutContext(followerRecord, eventId, "ticket_id", ticketId);
+                        Object followerId = ((Map<?, ?>) follower).get("id");
+                        records.add(createRecord("ticket_followers", followerRecord, eventType,
+                                keyOf("ticket_id", ticketId, "id", followerId)));
+                    }
                 }
             }
         }
@@ -152,20 +203,22 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
 
     // --- User Events ---
 
-    private List<RoutedRecord> routeUserEvent(Map<String, Object> payload, String eventType) {
+    private List<RoutedRecord> routeUserEvent(Map<String, Object> payload, String eventType, String domain) {
         Map<String, Object> detail = getMapField(payload, DETAIL_FIELD);
 
         if (detail == null || detail.get("id") == null) {
             throw new PayloadRoutingException("Zendesk user event missing required field: detail.id");
         }
 
-        return Collections.singletonList(createRecord("user_events", payload, eventType));
+        Map<String, Object> mainPayload = buildMainPayload(payload, domain);
+        return Collections.singletonList(createRecord("user_events", mainPayload, eventType,
+                keyOf("user_id", detail.get("id"))));
     }
 
     // --- Organization Events ---
 
     @SuppressWarnings("unchecked")
-    private List<RoutedRecord> routeOrganizationEvent(Map<String, Object> payload, String eventType) {
+    private List<RoutedRecord> routeOrganizationEvent(Map<String, Object> payload, String eventType, String domain) {
         List<RoutedRecord> records = new ArrayList<>();
         Map<String, Object> detail = getMapField(payload, DETAIL_FIELD);
 
@@ -173,27 +226,158 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
             throw new PayloadRoutingException("Zendesk organization event missing required field: detail.id");
         }
 
-        // Main organization event record
-        records.add(createRecord("organization_events", payload, eventType));
-
         Object orgId = detail.get("id");
+        Object eventId = payload.get("id");
 
-        // Split tags array
-        Object tags = detail.get("tags");
-        if (tags instanceof List) {
-            for (Object tag : (List<?>) tags) {
-                Map<String, Object> tagRecord = new LinkedHashMap<>();
-                if (tag instanceof Map) {
-                    tagRecord.putAll((Map<String, Object>) tag);
-                } else {
-                    tagRecord.put("value", tag);
+        Map<String, Object> mainPayload = buildMainPayload(payload, domain);
+        records.add(createRecord("organization_events", mainPayload, eventType,
+                keyOf("organization_id", orgId)));
+
+        // Fan-out: tags — key: {organization_id, value}
+        if (shouldFanout(domain, "tags")) {
+            Object tags = detail.get("tags");
+            if (tags instanceof List) {
+                for (Object tag : (List<?>) tags) {
+                    Map<String, Object> tagRecord = new LinkedHashMap<>();
+                    Object tagValue;
+                    if (tag instanceof Map) {
+                        tagRecord.putAll((Map<String, Object>) tag);
+                        tagValue = ((Map<?, ?>) tag).get("value");
+                    } else {
+                        tagRecord.put("value", tag);
+                        tagValue = tag;
+                    }
+                    addFanoutContext(tagRecord, eventId, "organization_id", orgId);
+                    records.add(createRecord("organization_tags", tagRecord, eventType,
+                            keyOf("organization_id", orgId, "value", tagValue)));
                 }
-                tagRecord.put(CONTEXT_PREFIX + "organization_id", orgId);
-                records.add(createRecord("organization_tags", tagRecord, eventType));
             }
         }
 
         return records;
+    }
+
+    // --- Generic: Events with detail.id ---
+
+    private List<RoutedRecord> routeDetailIdEvent(Map<String, Object> payload, String eventType,
+                                                   String domain, String topicSuffix, String keyName) {
+        Map<String, Object> detail = getMapField(payload, DETAIL_FIELD);
+
+        if (detail == null || detail.get("id") == null) {
+            throw new PayloadRoutingException("Zendesk " + domain + " event missing required field: detail.id");
+        }
+
+        Map<String, Object> mainPayload = buildMainPayload(payload, domain);
+        return Collections.singletonList(createRecord(topicSuffix, mainPayload, eventType,
+                keyOf(keyName, detail.get("id"))));
+    }
+
+    // --- Agent Availability Events (keyed by agent_id) ---
+
+    private List<RoutedRecord> routeAgentEvent(Map<String, Object> payload, String eventType, String domain) {
+        Map<String, Object> detail = getMapField(payload, DETAIL_FIELD);
+
+        if (detail == null) {
+            throw new PayloadRoutingException("Zendesk agent event missing required field: detail");
+        }
+
+        // Agent events use agent_id as key (not id)
+        Object agentId = detail.get("agent_id");
+        if (agentId == null) {
+            agentId = detail.get("id");
+        }
+        if (agentId == null) {
+            throw new PayloadRoutingException("Zendesk agent event missing required field: detail.agent_id or detail.id");
+        }
+
+        Map<String, Object> mainPayload = buildMainPayload(payload, domain);
+        return Collections.singletonList(createRecord("agent_events", mainPayload, eventType,
+                keyOf("agent_id", agentId)));
+    }
+
+    // --- Account-level Events (keyed by account_id) ---
+
+    private List<RoutedRecord> routeAccountIdEvent(Map<String, Object> payload, String eventType,
+                                                    String topicSuffix) {
+        // Account-level events may have account_id at top level or in detail
+        Object accountId = payload.get("account_id");
+        Map<String, Object> detail = getMapField(payload, DETAIL_FIELD);
+        if (accountId == null && detail != null) {
+            accountId = detail.get("account_id");
+        }
+
+        Map<String, Object> key = accountId != null
+                ? keyOf("account_id", accountId)
+                : Collections.emptyMap();
+
+        return Collections.singletonList(createRecord(topicSuffix, payload, eventType, key));
+    }
+
+    // --- Payload Transformation ---
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> buildMainPayload(Map<String, Object> payload, String domain) {
+        boolean needsTransform = flattenDetail || !includeEvent;
+        if (!needsTransform) {
+            return payload;
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+
+        for (Map.Entry<String, Object> entry : payload.entrySet()) {
+            String key = entry.getKey();
+            // Skip detail when flattening (will be promoted with prefix)
+            if (flattenDetail && DETAIL_FIELD.equals(key)) {
+                continue;
+            }
+            // Skip event when excluded
+            if (!includeEvent && EVENT_FIELD.equals(key)) {
+                continue;
+            }
+            result.put(key, entry.getValue());
+        }
+
+        // Flatten detail fields with prefix
+        if (flattenDetail) {
+            Map<String, Object> detail = getMapField(payload, DETAIL_FIELD);
+            if (detail != null) {
+                for (Map.Entry<String, Object> entry : detail.entrySet()) {
+                    result.put(flattenDetailPrefix + entry.getKey(), entry.getValue());
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // --- Fanout Context ---
+
+    private void addFanoutContext(Map<String, Object> record, Object eventId, String parentIdField, Object parentId) {
+        record.put(CONTEXT_PREFIX + parentIdField, parentId);
+        if (eventId != null) {
+            record.put(CONTEXT_PREFIX + "event_id", eventId);
+        }
+    }
+
+    // --- Key Helpers ---
+
+    private Map<String, Object> keyOf(String field, Object value) {
+        Map<String, Object> key = new LinkedHashMap<>();
+        key.put(field, value);
+        return key;
+    }
+
+    private Map<String, Object> keyOf(String f1, Object v1, String f2, Object v2) {
+        Map<String, Object> key = new LinkedHashMap<>();
+        key.put(f1, v1);
+        key.put(f2, v2);
+        return key;
+    }
+
+    // --- Fanout Control ---
+
+    private boolean shouldFanout(String domain, String field) {
+        return fanoutFields.contains(domain + "." + field);
     }
 
     // --- Helpers ---
@@ -208,7 +392,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
             case DEFAULT_TOPIC:
             default:
                 LOG.info("Routing unknown Zendesk event type '{}' to default topic: {}", eventType, defaultTopic);
-                return Collections.singletonList(createRecord(defaultTopic, payload, eventType));
+                return Collections.singletonList(createRecord(defaultTopic, payload, eventType, Collections.emptyMap()));
         }
     }
 
@@ -233,10 +417,6 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
         return null;
     }
 
-    /**
-     * Extract event name from Zendesk event type.
-     * Format: "zen:event-type:DOMAIN.EVENT_NAME"
-     */
     private String extractEventName(String eventType) {
         int lastDot = eventType.lastIndexOf('.');
         if (lastDot >= 0 && lastDot < eventType.length() - 1) {
@@ -245,7 +425,8 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
         return null;
     }
 
-    private RoutedRecord createRecord(String topicSuffix, Map<String, Object> data, String eventType) {
+    private RoutedRecord createRecord(String topicSuffix, Map<String, Object> data, String eventType,
+                                      Map<String, Object> keyFields) {
         String fullTopic = topicPrefix + topicSuffix;
         String json;
         try {
@@ -253,7 +434,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
         } catch (JsonProcessingException e) {
             throw new PayloadRoutingException("Failed to serialize record payload to JSON", e);
         }
-        return new RoutedRecord(fullTopic, json, eventType);
+        return new RoutedRecord(fullTopic, json, eventType, keyFields);
     }
 
     @SuppressWarnings("unchecked")
