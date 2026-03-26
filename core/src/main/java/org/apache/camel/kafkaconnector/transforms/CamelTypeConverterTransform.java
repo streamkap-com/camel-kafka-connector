@@ -63,6 +63,11 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
             return null;
         }
 
+        // Already a Struct (e.g. struct keys from payload routing) — pass through
+        if (originalValue instanceof org.apache.kafka.connect.data.Struct) {
+            return originalValue;
+        }
+
         // Special handling for JSON string to Map conversion
         if (Map.class.isAssignableFrom(fieldTargetType) && originalValue instanceof String) {
             String stringValue = (String) originalValue;
