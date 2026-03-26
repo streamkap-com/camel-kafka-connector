@@ -61,6 +61,19 @@ public class CamelNettyhttpSourceConnectorConfig
     public static final Boolean CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_DEFAULT = true;
     public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_DOC = "Whether to include the 'event' field in the output record. The event field contains change-specific data (e.g. comment added, status changed) which varies per event type. Set to false for upsert/state-table use cases where only the entity state (detail) matters. Set to true for append/audit-log use cases where change history is needed.";
 
+    // Source DLQ configuration
+    public static final String CAMEL_SOURCE_DLQ_ENABLED_CONF = "camel.source.dlq.enabled";
+    public static final Boolean CAMEL_SOURCE_DLQ_ENABLED_DEFAULT = false;
+    public static final String CAMEL_SOURCE_DLQ_ENABLED_DOC = "Whether to enable source dead letter queue. When enabled, records that fail processing are written to the DLQ topic instead of being dropped or crashing the connector.";
+
+    public static final String CAMEL_SOURCE_DLQ_TOPIC_CONF = "camel.source.dlq.topic";
+    public static final String CAMEL_SOURCE_DLQ_TOPIC_DEFAULT = "source_dlq";
+    public static final String CAMEL_SOURCE_DLQ_TOPIC_DOC = "The topic name for the source dead letter queue.";
+
+    public static final String CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_CONF = "camel.source.dlq.bootstrap.servers";
+    public static final String CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_DEFAULT = "";
+    public static final String CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_DOC = "Bootstrap servers for the DLQ producer. If empty, uses the connector's bootstrap servers from the worker config.";
+
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_CONF = "camel.source.path.protocol";
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DOC = "The protocol to use which is either http, https or proxy (consumer only). One of: [http] [https] [proxy]";
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DEFAULT = null;
@@ -504,6 +517,10 @@ public class CamelNettyhttpSourceConnectorConfig
         conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_DOC);
         conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_DOC);
         conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_DOC);
+        // Source DLQ config
+        conf.define(CAMEL_SOURCE_DLQ_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_DLQ_ENABLED_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_DLQ_ENABLED_DOC);
+        conf.define(CAMEL_SOURCE_DLQ_TOPIC_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_DLQ_TOPIC_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_DLQ_TOPIC_DOC);
+        conf.define(CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_DOC);
         // Netty-HTTP specific config
         conf.define(CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DEFAULT, ConfigDef.Importance.HIGH, CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DOC);
         conf.define(CAMEL_SOURCE_NETTYHTTP_PATH_HOST_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_NETTYHTTP_PATH_HOST_DEFAULT, ConfigDef.Importance.HIGH, CAMEL_SOURCE_NETTYHTTP_PATH_HOST_DOC);

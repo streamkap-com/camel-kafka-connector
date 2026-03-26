@@ -34,6 +34,7 @@ import org.apache.camel.StreamCache;
 import org.apache.camel.kafkaconnector.CamelSourceConnectorConfig;
 import org.apache.camel.kafkaconnector.CamelSourceRecord;
 import org.apache.camel.kafkaconnector.CamelSourceTask;
+import org.apache.camel.kafkaconnector.nettyhttp.dlq.SourceDlqProducer;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.PayloadRouter;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.PayloadRoutingException;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.PayloadRoutingStrategy;
@@ -56,6 +57,7 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
     private static final Logger LOG = LoggerFactory.getLogger(CamelNettyhttpSourceTask.class);
 
     private PayloadRouter payloadRouter;
+    private SourceDlqProducer dlqProducer;
     private final ConcurrentHashMap<String, AtomicInteger> exchangeRefCounts = new ConcurrentHashMap<>();
 
     @Override
@@ -112,6 +114,19 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             LOG.info("Payload routing enabled with type '{}', topic prefix '{}', fanout fields: {}, flatten detail: {}",
                     routerType, topicPrefix, fanoutFields, flattenDetail);
         }
+
+        // Initialize DLQ producer if enabled
+        boolean dlqEnabled = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_DLQ_ENABLED_CONF);
+        if (dlqEnabled) {
+            String dlqTopic = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_DLQ_TOPIC_CONF);
+            String dlqBootstrap = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_CONF);
+            if (dlqBootstrap == null || dlqBootstrap.trim().isEmpty()) {
+                // Fall back to worker's bootstrap servers
+                dlqBootstrap = props.getOrDefault("camel.connector.bootstrap.servers",
+                        props.getOrDefault("bootstrap.servers", "localhost:9092"));
+            }
+            dlqProducer = new SourceDlqProducer(dlqBootstrap, dlqTopic);
+        }
     }
 
     @Override
@@ -138,84 +153,21 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             LOG.debug("Received Exchange {} with Message {} from Endpoint {}", exchange.getExchangeId(),
                     exchange.getMessage().getMessageId(), exchange.getFromEndpoint());
 
-            Map<String, String> sourcePartition = Collections.singletonMap("filename", exchange.getFromEndpoint().toString());
-            Map<String, String> sourceOffset = Collections.singletonMap("position", exchange.getExchangeId());
-
-            final Object messageHeaderKey = camelMessageHeaderKey != null ? exchange.getMessage().getHeader(camelMessageHeaderKey) : null;
-            final Schema messageKeySchema = messageHeaderKey != null ? SchemaHelper.buildSchemaBuilderForType(messageHeaderKey) : null;
-            final long timestamp = calculateTimestamp(exchange);
-
-            // Extract body as string for routing
+            // Extract body as string before any processing (preserved for DLQ)
             String bodyString = extractBodyString(exchange);
 
-            List<RoutedRecord> routedRecords;
             try {
-                routedRecords = payloadRouter.route(bodyString);
+                processExchange(exchange, bodyString, records);
             } catch (PayloadRoutingException e) {
                 LOG.error("Payload routing failed for exchange {}: {}", exchange.getExchangeId(), e.getMessage());
+                sendToDlq(bodyString, null, null, e);
                 acknowledgeExchange(exchange);
                 continue;
-            }
-
-            if (routedRecords.isEmpty()) {
+            } catch (Exception e) {
+                LOG.error("Unexpected error processing exchange {}: {}", exchange.getExchangeId(), e.getMessage(), e);
+                sendToDlq(bodyString, null, null, e);
                 acknowledgeExchange(exchange);
                 continue;
-            }
-
-            // Check if we have enough free slots
-            if (freeSlots.size() < routedRecords.size()) {
-                LOG.debug("Insufficient free slots ({}) for routed records ({}), will retry next poll",
-                        freeSlots.size(), routedRecords.size());
-                break;
-            }
-
-            // Track reference count for fan-out
-            String exchangeId = exchange.getExchangeId();
-            exchangeRefCounts.put(exchangeId, new AtomicInteger(routedRecords.size()));
-
-            for (RoutedRecord routed : routedRecords) {
-                Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(routed.getPayload());
-
-                // Build struct key from routed record's key fields, or fall back to header-based key
-                Object recordKey;
-                Schema recordKeySchema;
-                if (routed.hasKey()) {
-                    Map<String, Object> keyFields = routed.getKeyFields();
-                    SchemaBuilder keySchemaBuilder = SchemaBuilder.struct().name(routed.getTopic() + "_key");
-                    for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
-                        keySchemaBuilder.field(kf.getKey(), SchemaHelper.buildSchemaBuilderForType(kf.getValue()));
-                    }
-                    recordKeySchema = keySchemaBuilder.build();
-                    Struct keyStruct = new Struct(recordKeySchema);
-                    for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
-                        keyStruct.put(kf.getKey(), kf.getValue());
-                    }
-                    recordKey = keyStruct;
-                } else {
-                    recordKey = messageHeaderKey;
-                    recordKeySchema = recordKey != null ? SchemaHelper.buildSchemaBuilderForType(recordKey) : null;
-                }
-
-                CamelSourceRecord camelRecord = new CamelSourceRecord(sourcePartition, sourceOffset,
-                        routed.getTopic(), null, recordKeySchema, recordKey,
-                        bodySchema, routed.getPayload(), timestamp);
-
-                camelRecord.setEventType(routed.getEventType());
-                camelRecord.setSourceExchangeId(exchangeId);
-
-                if (mapHeaders && exchange.getMessage().hasHeaders()) {
-                    setAdditionalHeaders(camelRecord, exchange.getMessage().getHeaders(), HEADER_CAMEL_PREFIX);
-                }
-                if (mapProperties && exchange.hasProperties()) {
-                    setAdditionalHeaders(camelRecord, exchange.getProperties(), PROPERTY_CAMEL_PREFIX);
-                }
-
-                TaskHelper.logRecordContent(LOG, loggingLevel, camelRecord);
-                Integer claimCheck = freeSlots.remove();
-                camelRecord.setClaimCheck(claimCheck);
-                exchangesWaitingForAck[claimCheck] = exchange;
-                LOG.debug("Routed record to topic: {}, claim check: {}", routed.getTopic(), claimCheck);
-                records.add(camelRecord);
             }
 
             collectedRecords++;
@@ -260,6 +212,96 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             freeSlots.add(claimCheck);
             LOG.debug("Claim check number: {} freed.", claimCheck);
         }
+    }
+
+    @Override
+    public void stop() {
+        super.stop();
+        if (dlqProducer != null) {
+            dlqProducer.close();
+        }
+    }
+
+    private void processExchange(Exchange exchange, String bodyString, List<SourceRecord> records) {
+        Map<String, String> sourcePartition = Collections.singletonMap("filename", exchange.getFromEndpoint().toString());
+        Map<String, String> sourceOffset = Collections.singletonMap("position", exchange.getExchangeId());
+
+        final Object messageHeaderKey = camelMessageHeaderKey != null ? exchange.getMessage().getHeader(camelMessageHeaderKey) : null;
+        final Schema messageKeySchema = messageHeaderKey != null ? SchemaHelper.buildSchemaBuilderForType(messageHeaderKey) : null;
+        final long timestamp = calculateTimestamp(exchange);
+
+        List<RoutedRecord> routedRecords = payloadRouter.route(bodyString);
+
+        if (routedRecords.isEmpty()) {
+            acknowledgeExchange(exchange);
+            return;
+        }
+
+        // Check if we have enough free slots
+        if (freeSlots.size() < routedRecords.size()) {
+            LOG.debug("Insufficient free slots ({}) for routed records ({}), will retry next poll",
+                    freeSlots.size(), routedRecords.size());
+            return;
+        }
+
+        // Track reference count for fan-out
+        String exchangeId = exchange.getExchangeId();
+        exchangeRefCounts.put(exchangeId, new AtomicInteger(routedRecords.size()));
+
+        for (RoutedRecord routed : routedRecords) {
+            Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(routed.getPayload());
+
+            // Build struct key from routed record's key fields, or fall back to header-based key
+            Object recordKey;
+            Schema recordKeySchema;
+            if (routed.hasKey()) {
+                Map<String, Object> keyFields = routed.getKeyFields();
+                SchemaBuilder keySchemaBuilder = SchemaBuilder.struct().name(routed.getTopic() + "_key");
+                for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
+                    keySchemaBuilder.field(kf.getKey(), SchemaHelper.buildSchemaBuilderForType(kf.getValue()));
+                }
+                recordKeySchema = keySchemaBuilder.build();
+                Struct keyStruct = new Struct(recordKeySchema);
+                for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
+                    keyStruct.put(kf.getKey(), kf.getValue());
+                }
+                recordKey = keyStruct;
+            } else {
+                recordKey = messageHeaderKey;
+                recordKeySchema = recordKey != null ? SchemaHelper.buildSchemaBuilderForType(recordKey) : null;
+            }
+
+            CamelSourceRecord camelRecord = new CamelSourceRecord(sourcePartition, sourceOffset,
+                    routed.getTopic(), null, recordKeySchema, recordKey,
+                    bodySchema, routed.getPayload(), timestamp);
+
+            camelRecord.setEventType(routed.getEventType());
+            camelRecord.setSourceExchangeId(exchangeId);
+
+            if (mapHeaders && exchange.getMessage().hasHeaders()) {
+                setAdditionalHeaders(camelRecord, exchange.getMessage().getHeaders(), HEADER_CAMEL_PREFIX);
+            }
+            if (mapProperties && exchange.hasProperties()) {
+                setAdditionalHeaders(camelRecord, exchange.getProperties(), PROPERTY_CAMEL_PREFIX);
+            }
+
+            TaskHelper.logRecordContent(LOG, loggingLevel, camelRecord);
+            Integer claimCheck = freeSlots.remove();
+            camelRecord.setClaimCheck(claimCheck);
+            exchangesWaitingForAck[claimCheck] = exchange;
+            LOG.debug("Routed record to topic: {}, claim check: {}", routed.getTopic(), claimCheck);
+            records.add(camelRecord);
+        }
+    }
+
+    private void sendToDlq(String rawPayload, String intendedTopic, String eventType, Exception error) {
+        if (dlqProducer == null) {
+            LOG.warn("DLQ not enabled. Dropping errored record. Error: {} Payload: {}",
+                    error.getMessage(), rawPayload);
+            return;
+        }
+        dlqProducer.send(rawPayload, intendedTopic, eventType,
+                error.getClass().getName(), error.getMessage());
     }
 
     private String extractBodyString(Exchange exchange) {
