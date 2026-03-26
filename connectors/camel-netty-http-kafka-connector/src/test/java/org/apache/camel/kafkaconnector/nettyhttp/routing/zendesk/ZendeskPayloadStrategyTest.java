@@ -52,7 +52,7 @@ public class ZendeskPayloadStrategyTest {
         assertEquals("zendesk_ticket_events", records.get(0).getTopic());
 
         // Key is struct with ticket_id
-        assertEquals(987654, records.get(0).getKeyFields().get("ticket_id"));
+        assertEquals(987654, records.get(0).getKeyFields().get("detail_id"));
     }
 
     @Test
@@ -66,7 +66,7 @@ public class ZendeskPayloadStrategyTest {
 
         // Tag key: {ticket_id, value}
         assertEquals("zendesk_ticket_tags", records.get(1).getTopic());
-        assertEquals(987654, records.get(1).getKeyFields().get("ticket_id"));
+        assertEquals(987654, records.get(1).getKeyFields().get("detail_id"));
         assertEquals("urgent", records.get(1).getKeyFields().get("value"));
 
         assertEquals("zendesk_ticket_tags", records.get(2).getTopic());
@@ -74,7 +74,7 @@ public class ZendeskPayloadStrategyTest {
 
         // Custom field key: {ticket_id, id}
         assertEquals("zendesk_ticket_custom_fields", records.get(3).getTopic());
-        assertEquals(987654, records.get(3).getKeyFields().get("ticket_id"));
+        assertEquals(987654, records.get(3).getKeyFields().get("detail_id"));
         assertEquals(123, records.get(3).getKeyFields().get("id"));
     }
 
@@ -147,10 +147,10 @@ public class ZendeskPayloadStrategyTest {
 
         assertEquals(3, records.size());
         // Collaborator key: {ticket_id: 500, id: 10}
-        assertEquals(500, records.get(1).getKeyFields().get("ticket_id"));
+        assertEquals(500, records.get(1).getKeyFields().get("detail_id"));
         assertEquals(10, records.get(1).getKeyFields().get("id"));
         // Follower key: {ticket_id: 500, id: 20}
-        assertEquals(500, records.get(2).getKeyFields().get("ticket_id"));
+        assertEquals(500, records.get(2).getKeyFields().get("detail_id"));
         assertEquals(20, records.get(2).getKeyFields().get("id"));
     }
 
@@ -199,7 +199,7 @@ public class ZendeskPayloadStrategyTest {
 
         assertEquals(1, records.size());
         assertEquals("zendesk_user_events", records.get(0).getTopic());
-        assertEquals(6596848315901L, records.get(0).getKeyFields().get("user_id"));
+        assertEquals(6596848315901L, records.get(0).getKeyFields().get("detail_id"));
     }
 
     @Test
@@ -223,7 +223,7 @@ public class ZendeskPayloadStrategyTest {
 
         List<RoutedRecord> records = strategy.route(payload);
         assertEquals(1, records.size());
-        assertEquals(111222, records.get(0).getKeyFields().get("organization_id"));
+        assertEquals(111222, records.get(0).getKeyFields().get("detail_id"));
     }
 
     @Test
@@ -239,9 +239,9 @@ public class ZendeskPayloadStrategyTest {
 
         assertEquals(3, records.size());
         // Tag key: {organization_id, value}
-        assertEquals(111222, records.get(1).getKeyFields().get("organization_id"));
+        assertEquals(111222, records.get(1).getKeyFields().get("detail_id"));
         assertEquals("enterprise", records.get(1).getKeyFields().get("value"));
-        assertEquals(111222, records.get(2).getKeyFields().get("organization_id"));
+        assertEquals(111222, records.get(2).getKeyFields().get("detail_id"));
         assertEquals("vip", records.get(2).getKeyFields().get("value"));
     }
 
@@ -268,7 +268,7 @@ public class ZendeskPayloadStrategyTest {
 
         assertEquals(1, records.size());
         assertEquals("zendesk_article_events", records.get(0).getTopic());
-        assertEquals(888999, records.get(0).getKeyFields().get("article_id"));
+        assertEquals(888999, records.get(0).getKeyFields().get("detail_id"));
     }
 
     @Test
@@ -294,7 +294,7 @@ public class ZendeskPayloadStrategyTest {
 
         assertEquals(1, records.size());
         assertEquals("zendesk_community_post_events", records.get(0).getTopic());
-        assertEquals(777888, records.get(0).getKeyFields().get("community_post_id"));
+        assertEquals(777888, records.get(0).getKeyFields().get("detail_id"));
     }
 
     // ===================== MESSAGING EVENTS =====================
@@ -311,7 +311,7 @@ public class ZendeskPayloadStrategyTest {
 
         assertEquals(1, records.size());
         assertEquals("zendesk_messaging_events", records.get(0).getTopic());
-        assertEquals(555444, records.get(0).getKeyFields().get("messaging_ticket_id"));
+        assertEquals(555444, records.get(0).getKeyFields().get("detail_id"));
     }
 
     // ===================== AGENT AVAILABILITY EVENTS =====================
@@ -330,7 +330,7 @@ public class ZendeskPayloadStrategyTest {
 
         assertEquals(1, records.size());
         assertEquals("zendesk_agent_events", records.get(0).getTopic());
-        assertEquals(99887766, records.get(0).getKeyFields().get("agent_id"));
+        assertEquals(99887766, records.get(0).getKeyFields().get("detail_agent_id"));
     }
 
     @Test
@@ -344,7 +344,7 @@ public class ZendeskPayloadStrategyTest {
         List<RoutedRecord> records = strategy.route(payload);
 
         assertEquals(1, records.size());
-        assertEquals(11223344, records.get(0).getKeyFields().get("agent_id"));
+        assertEquals(11223344, records.get(0).getKeyFields().get("detail_id"));
     }
 
     @Test

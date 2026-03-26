@@ -74,11 +74,11 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
             case "organization":
                 return routeOrganizationEvent(payload, eventType, domain);
             case "article":
-                return routeDetailIdEvent(payload, eventType, domain, "article_events", "article_id");
+                return routeDetailIdEvent(payload, eventType, domain, "article_events");
             case "community_post":
-                return routeDetailIdEvent(payload, eventType, domain, "community_post_events", "community_post_id");
+                return routeDetailIdEvent(payload, eventType, domain, "community_post_events");
             case "messaging_ticket":
-                return routeDetailIdEvent(payload, eventType, domain, "messaging_events", "messaging_ticket_id");
+                return routeDetailIdEvent(payload, eventType, domain, "messaging_events");
             case "agent":
                 return routeAgentEvent(payload, eventType, domain);
             case "omnichannel_config":
@@ -104,9 +104,10 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
         Object ticketId = detail.get("id");
         Object eventId = payload.get("id");
 
-        // Main ticket event — key: {ticket_id}
+        // Main ticket event — key field matches flattened value field name
+        String idKeyField = flattenDetailPrefix + "id";
         Map<String, Object> mainPayload = buildMainPayload(payload, domain);
-        records.add(createRecord("ticket_events", mainPayload, eventType, keyOf("ticket_id", ticketId)));
+        records.add(createRecord("ticket_events", mainPayload, eventType, keyOf(idKeyField, ticketId)));
 
         // Fan-out: tags — key: {ticket_id, value}
         if (shouldFanout(domain, "tags")) {
@@ -122,9 +123,9 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
                         tagRecord.put("value", tag);
                         tagValue = tag;
                     }
-                    addFanoutContext(tagRecord, eventId, "ticket_id", ticketId);
+                    addFanoutContext(tagRecord, eventId, idKeyField, ticketId);
                     records.add(createRecord("ticket_tags", tagRecord, eventType,
-                            keyOf("ticket_id", ticketId, "value", tagValue)));
+                            keyOf(idKeyField, ticketId, "value", tagValue)));
                 }
             }
         }
@@ -136,10 +137,10 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
                 for (Object field : (List<?>) customFields) {
                     if (field instanceof Map) {
                         Map<String, Object> fieldRecord = new LinkedHashMap<>((Map<String, Object>) field);
-                        addFanoutContext(fieldRecord, eventId, "ticket_id", ticketId);
+                        addFanoutContext(fieldRecord, eventId, idKeyField, ticketId);
                         Object fieldId = ((Map<?, ?>) field).get("id");
                         records.add(createRecord("ticket_custom_fields", fieldRecord, eventType,
-                                keyOf("ticket_id", ticketId, "id", fieldId)));
+                                keyOf(idKeyField, ticketId, "id", fieldId)));
                     }
                 }
             }
@@ -154,7 +155,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
                     Object comment = event.get("comment");
                     if (comment instanceof Map) {
                         Map<String, Object> commentRecord = new LinkedHashMap<>((Map<String, Object>) comment);
-                        addFanoutContext(commentRecord, eventId, "ticket_id", ticketId);
+                        addFanoutContext(commentRecord, eventId, idKeyField, ticketId);
                         if (detail.get("subject") != null) {
                             commentRecord.put(CONTEXT_PREFIX + "ticket_subject", detail.get("subject"));
                         }
@@ -173,10 +174,10 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
                 for (Object collab : (List<?>) collaborators) {
                     if (collab instanceof Map) {
                         Map<String, Object> collabRecord = new LinkedHashMap<>((Map<String, Object>) collab);
-                        addFanoutContext(collabRecord, eventId, "ticket_id", ticketId);
+                        addFanoutContext(collabRecord, eventId, idKeyField, ticketId);
                         Object collabId = ((Map<?, ?>) collab).get("id");
                         records.add(createRecord("ticket_collaborators", collabRecord, eventType,
-                                keyOf("ticket_id", ticketId, "id", collabId)));
+                                keyOf(idKeyField, ticketId, "id", collabId)));
                     }
                 }
             }
@@ -189,10 +190,10 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
                 for (Object follower : (List<?>) followers) {
                     if (follower instanceof Map) {
                         Map<String, Object> followerRecord = new LinkedHashMap<>((Map<String, Object>) follower);
-                        addFanoutContext(followerRecord, eventId, "ticket_id", ticketId);
+                        addFanoutContext(followerRecord, eventId, idKeyField, ticketId);
                         Object followerId = ((Map<?, ?>) follower).get("id");
                         records.add(createRecord("ticket_followers", followerRecord, eventType,
-                                keyOf("ticket_id", ticketId, "id", followerId)));
+                                keyOf(idKeyField, ticketId, "id", followerId)));
                     }
                 }
             }
@@ -210,9 +211,10 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
             throw new PayloadRoutingException("Zendesk user event missing required field: detail.id");
         }
 
+        String idKeyField = flattenDetailPrefix + "id";
         Map<String, Object> mainPayload = buildMainPayload(payload, domain);
         return Collections.singletonList(createRecord("user_events", mainPayload, eventType,
-                keyOf("user_id", detail.get("id"))));
+                keyOf(idKeyField, detail.get("id"))));
     }
 
     // --- Organization Events ---
@@ -228,12 +230,13 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
 
         Object orgId = detail.get("id");
         Object eventId = payload.get("id");
+        String idKeyField = flattenDetailPrefix + "id";
 
         Map<String, Object> mainPayload = buildMainPayload(payload, domain);
         records.add(createRecord("organization_events", mainPayload, eventType,
-                keyOf("organization_id", orgId)));
+                keyOf(idKeyField, orgId)));
 
-        // Fan-out: tags — key: {organization_id, value}
+        // Fan-out: tags — key: {detail_id, value}
         if (shouldFanout(domain, "tags")) {
             Object tags = detail.get("tags");
             if (tags instanceof List) {
@@ -247,9 +250,9 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
                         tagRecord.put("value", tag);
                         tagValue = tag;
                     }
-                    addFanoutContext(tagRecord, eventId, "organization_id", orgId);
+                    addFanoutContext(tagRecord, eventId, idKeyField, orgId);
                     records.add(createRecord("organization_tags", tagRecord, eventType,
-                            keyOf("organization_id", orgId, "value", tagValue)));
+                            keyOf(idKeyField, orgId, "value", tagValue)));
                 }
             }
         }
@@ -260,16 +263,17 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
     // --- Generic: Events with detail.id ---
 
     private List<RoutedRecord> routeDetailIdEvent(Map<String, Object> payload, String eventType,
-                                                   String domain, String topicSuffix, String keyName) {
+                                                   String domain, String topicSuffix) {
         Map<String, Object> detail = getMapField(payload, DETAIL_FIELD);
 
         if (detail == null || detail.get("id") == null) {
             throw new PayloadRoutingException("Zendesk " + domain + " event missing required field: detail.id");
         }
 
+        String idKeyField = flattenDetailPrefix + "id";
         Map<String, Object> mainPayload = buildMainPayload(payload, domain);
         return Collections.singletonList(createRecord(topicSuffix, mainPayload, eventType,
-                keyOf(keyName, detail.get("id"))));
+                keyOf(idKeyField, detail.get("id"))));
     }
 
     // --- Agent Availability Events (keyed by agent_id) ---
@@ -283,8 +287,10 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
 
         // Agent events use agent_id as key (not id)
         Object agentId = detail.get("agent_id");
+        String agentIdField = flattenDetailPrefix + "agent_id";
         if (agentId == null) {
             agentId = detail.get("id");
+            agentIdField = flattenDetailPrefix + "id";
         }
         if (agentId == null) {
             throw new PayloadRoutingException("Zendesk agent event missing required field: detail.agent_id or detail.id");
@@ -292,7 +298,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
 
         Map<String, Object> mainPayload = buildMainPayload(payload, domain);
         return Collections.singletonList(createRecord("agent_events", mainPayload, eventType,
-                keyOf("agent_id", agentId)));
+                keyOf(agentIdField, agentId)));
     }
 
     // --- Account-level Events (keyed by account_id) ---
@@ -353,7 +359,9 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
     // --- Fanout Context ---
 
     private void addFanoutContext(Map<String, Object> record, Object eventId, String parentIdField, Object parentId) {
-        record.put(CONTEXT_PREFIX + parentIdField, parentId);
+        // Add parent ID matching key field name (for sink connector upsert)
+        record.put(parentIdField, parentId);
+        // Add event ID for correlation (always with _ctx_ prefix since it's context-only)
         if (eventId != null) {
             record.put(CONTEXT_PREFIX + "event_id", eventId);
         }

@@ -179,7 +179,7 @@ public class PayloadRouterTest {
         assertEquals("zendesk_ticket_events", records.get(0).getTopic());
         assertEquals("zendesk_ticket_comments", records.get(1).getTopic());
         assertTrue(records.get(1).getPayload().contains("We are on it"));
-        assertTrue(records.get(1).getPayload().contains("_ctx_ticket_id"));
+        assertTrue(records.get(1).getPayload().contains("detail_id"));
         assertTrue(records.get(1).getPayload().contains("_ctx_ticket_subject"));
     }
 
