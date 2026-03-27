@@ -40,6 +40,13 @@ import org.apache.camel.kafkaconnector.nettyhttp.routing.PayloadRoutingException
 import org.apache.camel.kafkaconnector.nettyhttp.routing.PayloadRoutingStrategy;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.RoutedRecord;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.UnknownTypeBehavior;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.ChunkReader;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.ChunkReaderFactory;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.SnapshotCoordinator;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.SnapshotEngine;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.SnapshotMode;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.SnapshotRecord;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.SnapshotSignalConsumer;
 import org.apache.camel.kafkaconnector.utils.SchemaHelper;
 import org.apache.camel.kafkaconnector.utils.TaskHelper;
 import org.apache.camel.support.UnitOfWorkHelper;
@@ -55,9 +62,11 @@ import org.slf4j.LoggerFactory;
 public class CamelNettyhttpSourceTask extends CamelSourceTask {
 
     private static final Logger LOG = LoggerFactory.getLogger(CamelNettyhttpSourceTask.class);
+    private static final com.fasterxml.jackson.databind.ObjectMapper OBJECT_MAPPER = new com.fasterxml.jackson.databind.ObjectMapper();
 
     private PayloadRouter payloadRouter;
     private SourceDlqProducer dlqProducer;
+    private SnapshotEngine snapshotEngine;
     private final ConcurrentHashMap<String, AtomicInteger> exchangeRefCounts = new ConcurrentHashMap<>();
 
     @Override
@@ -97,12 +106,7 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
 
             // Advanced routing config
             String fanoutFieldsStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FANOUT_FIELDS_CONF);
-            Set<String> fanoutFields = (fanoutFieldsStr == null || fanoutFieldsStr.trim().isEmpty())
-                    ? Collections.emptySet()
-                    : Arrays.stream(fanoutFieldsStr.split(","))
-                            .map(String::trim)
-                            .filter(s -> !s.isEmpty())
-                            .collect(Collectors.toSet());
+            Set<String> fanoutFields = new HashSet<>(parseCsv(fanoutFieldsStr));
             boolean flattenDetail = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_CONF);
             String flattenDetailPrefix = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_CONF);
             boolean includeEvent = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_CONF);
@@ -121,13 +125,77 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             String dlqTopic = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_DLQ_TOPIC_CONF);
             String dlqBootstrap = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_CONF);
             if (dlqBootstrap == null || dlqBootstrap.trim().isEmpty()) {
-                // Fall back to worker's bootstrap servers
-                dlqBootstrap = props.getOrDefault("camel.connector.bootstrap.servers",
-                        props.getOrDefault("bootstrap.servers", "localhost:9092"));
+                dlqBootstrap = resolveBootstrapServers(props);
             }
             dlqProducer = new SourceDlqProducer(dlqBootstrap, dlqTopic);
         }
+
+        // Snapshot only makes sense with payload routing (provider-specific API queries)
+        if (payloadRouterEnabled) {
+            initializeSnapshotEngine(config, props);
+        }
     }
+
+    private void initializeSnapshotEngine(CamelNettyhttpSourceConnectorConfig config, Map<String, String> props) {
+        String snapshotModeStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_MODE_CONF);
+        SnapshotMode snapshotMode;
+        try {
+            snapshotMode = SnapshotMode.valueOf(snapshotModeStr.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            snapshotMode = SnapshotMode.NO_DATA;
+        }
+
+        String signalTopic = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_SIGNAL_TOPIC_CONF);
+        boolean hasSignalTopic = signalTopic != null && !signalTopic.trim().isEmpty();
+        boolean needsSnapshot = snapshotMode != SnapshotMode.NO_DATA || hasSignalTopic;
+
+        if (!needsSnapshot) {
+            LOG.info("Snapshot disabled (mode={}, no signal topic)", snapshotMode);
+            return;
+        }
+
+        // Create chunk reader via factory — null if provider doesn't support snapshots
+        String routerType = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_CONF);
+        ChunkReader chunkReader = ChunkReaderFactory.create(routerType, props);
+
+        if (chunkReader == null) {
+            LOG.info("Snapshot not available for provider '{}' — no ChunkReader implementation. " +
+                    "Snapshot mode and signal topic will be ignored.", routerType);
+            return;
+        }
+
+        int maxThreads = config.getInt(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_MAX_THREADS_CONF);
+        int chunkSize = config.getInt(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_CHUNK_SIZE_CONF);
+        long chunkDelayMs = config.getLong(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_CHUNK_DELAY_MS_CONF);
+        boolean parallelSegments = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_ENABLED_CONF);
+        long parallelSegmentsMinRows = config.getLong(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_MIN_ROWS_CONF);
+        long signalPollIntervalMs = config.getLong(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_SIGNAL_POLL_INTERVAL_MS_CONF);
+
+        String objectsStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_OBJECTS_CONF);
+        List<String> initialObjects = parseCsv(objectsStr);
+
+        String connectorName = props.getOrDefault("name", "camel-netty-http");
+
+        SnapshotCoordinator coordinator = new SnapshotCoordinator(
+                chunkReader, maxThreads, chunkSize, chunkDelayMs,
+                parallelSegments, parallelSegmentsMinRows, connectorName);
+
+        SnapshotSignalConsumer signalConsumer = null;
+        if (hasSignalTopic) {
+            String bootstrapServers = resolveBootstrapServers(props);
+            String groupId = connectorName + "-snapshot-signals";
+            signalConsumer = new SnapshotSignalConsumer(bootstrapServers, signalTopic, groupId);
+        }
+
+        snapshotEngine = new SnapshotEngine(snapshotMode, coordinator, signalConsumer,
+                chunkSize, initialObjects, connectorName, signalPollIntervalMs);
+
+        snapshotEngine.start(context);
+
+        LOG.info("Snapshot engine initialized: mode={}, signal topic={}, objects={}, threads={}",
+                snapshotMode, signalTopic, initialObjects, maxThreads);
+    }
+
 
     @Override
     public synchronized List<SourceRecord> poll() {
@@ -136,14 +204,29 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             return super.poll();
         }
 
-        // Payload routing mode
+        List<SourceRecord> records = new ArrayList<>();
+
+        // Poll snapshot engine for signals and snapshot records
+        if (snapshotEngine != null) {
+            List<SnapshotRecord> snapshotRecords = snapshotEngine.poll();
+            for (SnapshotRecord sr : snapshotRecords) {
+                records.add(snapshotRecordToSourceRecord(sr));
+            }
+        }
+
+        // Check if CDC streaming should be active
+        if (snapshotEngine != null && !snapshotEngine.shouldStream()) {
+            LOG.debug("CDC streaming paused during blocking snapshot");
+            return records.isEmpty() ? null : records;
+        }
+
+        // CDC path: process incoming webhook exchanges
         LOG.debug("Number of records waiting an ack: {}", freeSlots.capacity() - freeSlots.size());
         final long startPollEpochMilli = Instant.now().toEpochMilli();
 
         long remaining = remaining(startPollEpochMilli, maxPollDuration);
         long collectedRecords = 0L;
 
-        List<SourceRecord> records = new ArrayList<>();
         while (collectedRecords < maxBatchPollSize && freeSlots.size() >= 1 && remaining > 0) {
             Exchange exchange = consumer.receive(remaining);
             if (exchange == null) {
@@ -175,6 +258,36 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
         }
 
         return records.isEmpty() ? null : records;
+    }
+
+    private SourceRecord snapshotRecordToSourceRecord(SnapshotRecord sr) {
+        String payload;
+        try {
+            payload = OBJECT_MAPPER.writeValueAsString(sr.getData());
+        } catch (Exception e) {
+            throw new ConnectException("Failed to serialize snapshot record", e);
+        }
+
+        Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(payload);
+
+        Object recordId = sr.getRecordId();
+        Schema keySchema = null;
+        Object key = null;
+        if (recordId != null) {
+            Map<String, Object> keyFields = new java.util.LinkedHashMap<>();
+            keyFields.put("Id", recordId);
+            Struct keyStruct = buildKeyStruct(sr.getObjectName() + "_key", keyFields);
+            keySchema = keyStruct.schema();
+            key = keyStruct;
+        }
+
+        return new SourceRecord(
+                sr.getSourcePartition(),
+                sr.getSourceOffset(),
+                sr.getObjectName().toLowerCase() + "_events",
+                null, keySchema, key,
+                bodySchema, payload,
+                System.currentTimeMillis());
     }
 
     @Override
@@ -217,6 +330,9 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
     @Override
     public void stop() {
         super.stop();
+        if (snapshotEngine != null) {
+            snapshotEngine.shutdown();
+        }
         if (dlqProducer != null) {
             dlqProducer.close();
         }
@@ -251,20 +367,11 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
         for (RoutedRecord routed : routedRecords) {
             Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(routed.getPayload());
 
-            // Build struct key from routed record's key fields, or fall back to header-based key
             Object recordKey;
             Schema recordKeySchema;
             if (routed.hasKey()) {
-                Map<String, Object> keyFields = routed.getKeyFields();
-                SchemaBuilder keySchemaBuilder = SchemaBuilder.struct().name(routed.getTopic() + "_key");
-                for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
-                    keySchemaBuilder.field(kf.getKey(), SchemaHelper.buildSchemaBuilderForType(kf.getValue()));
-                }
-                recordKeySchema = keySchemaBuilder.build();
-                Struct keyStruct = new Struct(recordKeySchema);
-                for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
-                    keyStruct.put(kf.getKey(), kf.getValue());
-                }
+                Struct keyStruct = buildKeyStruct(routed.getTopic() + "_key", routed.getKeyFields());
+                recordKeySchema = keyStruct.schema();
                 recordKey = keyStruct;
             } else {
                 recordKey = messageHeaderKey;
@@ -313,6 +420,34 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             ((StreamCache) body).reset();
         }
         return exchange.getMessage().getBody(String.class);
+    }
+
+    private static Struct buildKeyStruct(String schemaName, Map<String, Object> keyFields) {
+        SchemaBuilder builder = SchemaBuilder.struct().name(schemaName);
+        for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
+            builder.field(kf.getKey(), SchemaHelper.buildSchemaBuilderForType(kf.getValue()));
+        }
+        Schema schema = builder.build();
+        Struct struct = new Struct(schema);
+        for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
+            struct.put(kf.getKey(), kf.getValue());
+        }
+        return struct;
+    }
+
+    private static String resolveBootstrapServers(Map<String, String> props) {
+        return props.getOrDefault("camel.connector.bootstrap.servers",
+                props.getOrDefault("bootstrap.servers", "localhost:9092"));
+    }
+
+    private static List<String> parseCsv(String csv) {
+        if (csv == null || csv.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(csv.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toList());
     }
 
     private void acknowledgeExchange(Exchange exchange) {
