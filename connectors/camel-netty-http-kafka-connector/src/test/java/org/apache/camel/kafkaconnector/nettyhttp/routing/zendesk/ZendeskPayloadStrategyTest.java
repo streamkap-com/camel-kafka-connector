@@ -468,6 +468,148 @@ public class ZendeskPayloadStrategyTest {
         assertEquals(987654, main.get("detail_id"));
     }
 
+    // ===================== __deleted FIELD =====================
+
+    @Test
+    void testDeletedEventSetsDeletedTrue() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:ticket.deleted");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 987654);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
+    }
+
+    @Test
+    void testCreatedEventSetsDeletedFalse() throws Exception {
+        Map<String, Object> payload = buildTicketPayload("zen:event-type:ticket.created");
+
+        List<RoutedRecord> records = strategy.route(payload);
+
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(false, result.get("__deleted"));
+    }
+
+    @Test
+    void testUpdatedEventSetsDeletedFalse() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:ticket.updated");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 100);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(false, result.get("__deleted"));
+    }
+
+    @Test
+    void testUserDeletedEvent() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:user.deleted");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 555);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
+    }
+
+    @Test
+    void testOrganizationDeletedEvent() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:organization.deleted");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 111);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
+    }
+
+    @Test
+    void testRemovedEventSetsDeletedTrue() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:article.removed");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 888);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
+    }
+
+    @Test
+    void testSoftDeletedEvent() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:user.soft_deleted");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 555);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
+    }
+
+    @Test
+    void testPermanentlyDeletedEvent() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:user.permanently_deleted");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 555);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
+    }
+
+    @Test
+    void testUndeletedEventIsNotDelete() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:ticket.undeleted");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 987654);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(false, result.get("__deleted"));
+    }
+
+    @Test
+    void testDeletedFieldWithFlatten() throws Exception {
+        ZendeskPayloadStrategy flattenStrategy = new ZendeskPayloadStrategy();
+        flattenStrategy.configure("zendesk_", UnknownTypeBehavior.DEFAULT_TOPIC, "unknown");
+        flattenStrategy.configureAdvanced(Collections.emptySet(), true, "detail_", true);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:ticket.deleted");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 987654);
+        detail.put("status", "deleted");
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = flattenStrategy.route(payload);
+
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
+        assertEquals(987654, result.get("detail_id"));
+        assertNull(result.get("detail"));
+    }
+
     // ===================== EXCLUDE EVENT =====================
 
     @Test

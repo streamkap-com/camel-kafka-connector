@@ -24,6 +24,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
     private static final String DETAIL_FIELD = "detail";
     private static final String EVENT_FIELD = "event";
     private static final String CONTEXT_PREFIX = "_ctx_";
+    private static final String DELETED_FIELD = "__deleted";
 
     private String topicPrefix = "";
     private UnknownTypeBehavior unknownTypeBehavior = UnknownTypeBehavior.DEFAULT_TOPIC;
@@ -106,7 +107,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
 
         // Main ticket event — key field matches flattened value field name
         String idKeyField = flattenDetailPrefix + "id";
-        Map<String, Object> mainPayload = buildMainPayload(payload, domain);
+        Map<String, Object> mainPayload = buildMainPayload(payload, domain, eventType);
         records.add(createRecord("ticket_events", mainPayload, eventType, keyOf(idKeyField, ticketId)));
 
         // Fan-out: tags — key: {ticket_id, value}
@@ -212,7 +213,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
         }
 
         String idKeyField = flattenDetailPrefix + "id";
-        Map<String, Object> mainPayload = buildMainPayload(payload, domain);
+        Map<String, Object> mainPayload = buildMainPayload(payload, domain, eventType);
         return Collections.singletonList(createRecord("user_events", mainPayload, eventType,
                 keyOf(idKeyField, detail.get("id"))));
     }
@@ -232,7 +233,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
         Object eventId = payload.get("id");
         String idKeyField = flattenDetailPrefix + "id";
 
-        Map<String, Object> mainPayload = buildMainPayload(payload, domain);
+        Map<String, Object> mainPayload = buildMainPayload(payload, domain, eventType);
         records.add(createRecord("organization_events", mainPayload, eventType,
                 keyOf(idKeyField, orgId)));
 
@@ -271,7 +272,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
         }
 
         String idKeyField = flattenDetailPrefix + "id";
-        Map<String, Object> mainPayload = buildMainPayload(payload, domain);
+        Map<String, Object> mainPayload = buildMainPayload(payload, domain, eventType);
         return Collections.singletonList(createRecord(topicSuffix, mainPayload, eventType,
                 keyOf(idKeyField, detail.get("id"))));
     }
@@ -296,7 +297,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
             throw new PayloadRoutingException("Zendesk agent event missing required field: detail.agent_id or detail.id");
         }
 
-        Map<String, Object> mainPayload = buildMainPayload(payload, domain);
+        Map<String, Object> mainPayload = buildMainPayload(payload, domain, eventType);
         return Collections.singletonList(createRecord("agent_events", mainPayload, eventType,
                 keyOf(agentIdField, agentId)));
     }
@@ -322,28 +323,22 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
     // --- Payload Transformation ---
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> buildMainPayload(Map<String, Object> payload, String domain) {
-        boolean needsTransform = flattenDetail || !includeEvent;
-        if (!needsTransform) {
-            return payload;
-        }
+    private Map<String, Object> buildMainPayload(Map<String, Object> payload, String domain, String eventType) {
+        boolean isDeleted = isDeleteEvent(eventType);
 
         Map<String, Object> result = new LinkedHashMap<>();
 
         for (Map.Entry<String, Object> entry : payload.entrySet()) {
             String key = entry.getKey();
-            // Skip detail when flattening (will be promoted with prefix)
             if (flattenDetail && DETAIL_FIELD.equals(key)) {
                 continue;
             }
-            // Skip event when excluded
             if (!includeEvent && EVENT_FIELD.equals(key)) {
                 continue;
             }
             result.put(key, entry.getValue());
         }
 
-        // Flatten detail fields with prefix
         if (flattenDetail) {
             Map<String, Object> detail = getMapField(payload, DETAIL_FIELD);
             if (detail != null) {
@@ -353,7 +348,26 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
             }
         }
 
+        // Add __deleted field based on event type
+        result.put(DELETED_FIELD, isDeleted);
+
         return result;
+    }
+
+    private boolean isDeleteEvent(String eventType) {
+        if (eventType == null) {
+            return false;
+        }
+        String eventName = extractEventName(eventType);
+        if (eventName == null) {
+            return false;
+        }
+        // "undeleted" is a restore, not a delete
+        if (eventName.startsWith("un")) {
+            return false;
+        }
+        // Match: deleted, soft_deleted, permanently_deleted, removed
+        return eventName.contains("deleted") || eventName.equals("removed");
     }
 
     // --- Fanout Context ---
