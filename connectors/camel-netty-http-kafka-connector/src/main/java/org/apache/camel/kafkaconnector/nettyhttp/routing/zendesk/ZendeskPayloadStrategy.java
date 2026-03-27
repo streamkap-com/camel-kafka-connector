@@ -362,12 +362,14 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
         if (eventName == null) {
             return false;
         }
-        // "undeleted" is a restore, not a delete
-        if (eventName.startsWith("un")) {
+        // Exclude: soft_deleted (recoverable), undeleted (restore)
+        if ("soft_deleted".equals(eventName) || "undeleted".equals(eventName)) {
             return false;
         }
-        // Match: deleted, soft_deleted, permanently_deleted, removed
-        return eventName.contains("deleted") || eventName.equals("removed");
+        // Match any event ending with "deleted" or "removed":
+        // deleted, permanently_deleted, channel_deleted, group_membership_deleted,
+        // removed, vote_removed, work_item_removed, etc.
+        return eventName.endsWith("deleted") || eventName.endsWith("removed");
     }
 
     // --- Fanout Context ---

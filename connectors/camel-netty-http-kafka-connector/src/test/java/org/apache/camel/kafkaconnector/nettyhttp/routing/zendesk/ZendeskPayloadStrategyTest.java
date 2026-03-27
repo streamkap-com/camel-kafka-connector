@@ -551,7 +551,7 @@ public class ZendeskPayloadStrategyTest {
     }
 
     @Test
-    void testSoftDeletedEvent() throws Exception {
+    void testSoftDeletedIsNotHardDelete() throws Exception {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type", "zen:event-type:user.soft_deleted");
         Map<String, Object> detail = new LinkedHashMap<>();
@@ -560,7 +560,7 @@ public class ZendeskPayloadStrategyTest {
 
         List<RoutedRecord> records = strategy.route(payload);
         Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
-        assertEquals(true, result.get("__deleted"));
+        assertEquals(false, result.get("__deleted"));
     }
 
     @Test
@@ -587,6 +587,58 @@ public class ZendeskPayloadStrategyTest {
         List<RoutedRecord> records = strategy.route(payload);
         Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
         assertEquals(false, result.get("__deleted"));
+    }
+
+    @Test
+    void testChannelDeletedEvent() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:agent.channel_deleted");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("agent_id", 123);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
+    }
+
+    @Test
+    void testGroupMembershipDeletedEvent() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:user.group_membership_deleted");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 555);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
+    }
+
+    @Test
+    void testVoteRemovedEvent() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:community_post.vote_removed");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("id", 777);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
+    }
+
+    @Test
+    void testWorkItemRemovedEvent() throws Exception {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "zen:event-type:agent.work_item_removed");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("agent_id", 99);
+        payload.put("detail", detail);
+
+        List<RoutedRecord> records = strategy.route(payload);
+        Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
+        assertEquals(true, result.get("__deleted"));
     }
 
     @Test
