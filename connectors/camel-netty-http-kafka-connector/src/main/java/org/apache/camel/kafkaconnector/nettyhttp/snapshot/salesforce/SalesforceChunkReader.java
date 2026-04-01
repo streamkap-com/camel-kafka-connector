@@ -36,31 +36,57 @@ public class SalesforceChunkReader implements ChunkReader {
         this.objectMapper = new ObjectMapper();
     }
 
+    // Salesforce FIELDS(ALL) requires LIMIT <= 200
+    private static final int FIELDS_ALL_MAX_LIMIT = 200;
+
     @Override
     @SuppressWarnings("unchecked")
     public List<Map<String, Object>> readChunk(String objectName, String afterKey, String endKey,
                                                 int chunkSize, String additionalCondition) throws Exception {
-        StringBuilder soql = new StringBuilder();
-        soql.append("SELECT FIELDS(ALL) FROM ").append(objectName);
+        // FIELDS(ALL) is limited to 200 rows per query, so we page internally
+        List<Map<String, Object>> allResults = new ArrayList<>();
+        String currentAfterKey = afterKey;
+        int remaining = chunkSize;
 
-        List<String> conditions = new ArrayList<>();
-        if (afterKey != null) {
-            conditions.add("Id > '" + escapeSOQL(afterKey) + "'");
-        }
-        if (endKey != null) {
-            conditions.add("Id < '" + escapeSOQL(endKey) + "'");
-        }
-        if (additionalCondition != null && !additionalCondition.trim().isEmpty()) {
-            conditions.add("(" + additionalCondition + ")");
+        while (remaining > 0) {
+            int pageSize = Math.min(remaining, FIELDS_ALL_MAX_LIMIT);
+
+            StringBuilder soql = new StringBuilder();
+            soql.append("SELECT FIELDS(ALL) FROM ").append(objectName);
+
+            List<String> conditions = new ArrayList<>();
+            if (currentAfterKey != null) {
+                conditions.add("Id > '" + escapeSOQL(currentAfterKey) + "'");
+            }
+            if (endKey != null) {
+                conditions.add("Id < '" + escapeSOQL(endKey) + "'");
+            }
+            if (additionalCondition != null && !additionalCondition.trim().isEmpty()) {
+                conditions.add("(" + additionalCondition + ")");
+            }
+
+            if (!conditions.isEmpty()) {
+                soql.append(" WHERE ").append(String.join(" AND ", conditions));
+            }
+
+            soql.append(" ORDER BY Id ASC LIMIT ").append(pageSize);
+
+            List<Map<String, Object>> page = executeSoqlQuery(soql.toString());
+            if (page.isEmpty()) {
+                break;
+            }
+
+            allResults.addAll(page);
+            currentAfterKey = (String) page.get(page.size() - 1).get("Id");
+            remaining -= page.size();
+
+            // If we got fewer than requested, no more data
+            if (page.size() < pageSize) {
+                break;
+            }
         }
 
-        if (!conditions.isEmpty()) {
-            soql.append(" WHERE ").append(String.join(" AND ", conditions));
-        }
-
-        soql.append(" ORDER BY Id ASC LIMIT ").append(chunkSize);
-
-        return executeSoqlQuery(soql.toString());
+        return allResults;
     }
 
     @Override
