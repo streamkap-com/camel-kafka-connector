@@ -52,27 +52,27 @@ public class SalesforceAuthClient {
             return accessToken;
         }
 
-        // Normalize instance URL: strip trailing slash and Lightning paths
-        String baseUrl = instanceUrl.replaceAll("/+$", "");
-        if (baseUrl.contains(".lightning.force.com")) {
-            // Lightning URL — convert to My Domain API URL
-            baseUrl = baseUrl.replace(".lightning.force.com", ".my.salesforce.com");
-        }
+        String baseUrl = normalizeUrl(instanceUrl);
         String loginUrl = baseUrl + "/services/oauth2/token";
-        LOG.info("Salesforce OAuth2 login URL: {}", loginUrl);
-        String body = "grant_type=password"
+
+        // Try client_credentials flow first (recommended, no password needed)
+        LOG.info("Attempting Salesforce OAuth2 client_credentials flow: {}", loginUrl);
+        HttpResponse<String> response = doAuthRequest(loginUrl,
+                "grant_type=client_credentials"
                 + "&client_id=" + encode(clientId)
-                + "&client_secret=" + encode(clientSecret)
-                + "&username=" + encode(username)
-                + "&password=" + encode(password);
+                + "&client_secret=" + encode(clientSecret));
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(loginUrl))
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        // Fall back to password flow if client_credentials fails
+        if (response.statusCode() != 200 && username != null && !username.isEmpty()
+                && password != null && !password.isEmpty()) {
+            LOG.info("Client credentials flow failed ({}), falling back to password flow", response.statusCode());
+            response = doAuthRequest(loginUrl,
+                    "grant_type=password"
+                    + "&client_id=" + encode(clientId)
+                    + "&client_secret=" + encode(clientSecret)
+                    + "&username=" + encode(username)
+                    + "&password=" + encode(password));
+        }
 
         if (response.statusCode() != 200) {
             throw new RuntimeException("Salesforce OAuth2 failed: " + response.statusCode() + " " + response.body());
@@ -96,6 +96,23 @@ public class SalesforceAuthClient {
     public void invalidateToken() {
         accessToken = null;
         tokenExpiresAt = 0;
+    }
+
+    private HttpResponse<String> doAuthRequest(String loginUrl, String body) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(loginUrl))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    private String normalizeUrl(String url) {
+        String normalized = url.replaceAll("/+$", "");
+        if (normalized.contains(".lightning.force.com")) {
+            normalized = normalized.replace(".lightning.force.com", ".my.salesforce.com");
+        }
+        return normalized;
     }
 
     private String encode(String value) {
