@@ -148,6 +148,413 @@ Platform events always have `__deleted = false`.
 
 All Salesforce events use `{Id: <record_id>}` as key (or `{<prefix>Id: <record_id>}` when flattened with a prefix).
 
+### Setting Up Salesforce to Send Events to the Connector
+
+
+### Setting Up Salesforce to Send Events to the Connector
+
+This guide walks through setting up Apex triggers to automatically send all record changes (create, update, delete, undelete) to the connector with **all fields included dynamically**.
+
+#### Prerequisites
+
+You need:
+- A Salesforce org (Developer, Professional, Enterprise, or Unlimited edition)
+- Admin access (System Administrator profile)
+- Your connector's public URL (e.g., `https://your-connector.example.com`)
+
+#### Step 1: Create an External Client App (for Authentication)
+
+This provides OAuth credentials for the Apex callout and snapshot API.
+
+1. **Setup** > Quick Find > search **"App Manager"**
+2. Click **New External Client App** (or **New Connected App** on older orgs)
+3. Fill in:
+   - **Name**: `Kafka Connector`
+   - **Contact Email**: your email
+   - **Distribution State**: `Local`
+4. Under **Enable OAuth**:
+   - Check **Enable OAuth Settings**
+   - **Callback URL**: `https://login.salesforce.com/services/oauth2/callback`
+   - **Selected OAuth Scopes**: add `Manage user data via APIs (api)`, `Full access (full)`, `Perform requests at any time (refresh_token, offline_access)`
+5. Under **Security**: uncheck `Require Proof Key for Code Exchange (PKCE)`
+6. Click **Create** / **Save**
+7. After saving, note the **Consumer Key** and **Consumer Secret** (you may need to click "Manage Consumer Details" to reveal the secret)
+
+Note: New apps may take 2-10 minutes to activate.
+
+#### Step 2: Create Named Credential (for Secure HTTP Callouts)
+
+Named Credentials store your connector's URL and authentication headers securely.
+
+**Create External Credential:**
+
+1. **Setup** > Quick Find > search **"Named Credentials"**
+2. Click **External Credentials** tab > **New**
+3. Fill in:
+   - **Label**: `Kafka Connector Webhook`
+   - **Name**: `Kafka_Connector_Webhook`
+   - **Authentication Protocol**: `Custom`
+4. Save
+5. Under **Principals** section > click **New**:
+   - **Parameter Name**: `Default`
+   - **Identity Type**: `Named Principal` (read-only)
+   - **Sequence Number**: `1`
+6. Save
+7. Click on the **Default** principal > under **Authentication Parameters** > **Add**:
+   - **Parameter 1 Name**: `x-api-key`
+   - **Parameter 1 Value**: your connector's API key
+8. Save
+
+**Create Named Credential:**
+
+1. Click **Named Credentials** tab > **New**
+2. Fill in:
+   - **Label**: `Kafka Connector`
+   - **Name**: `Kafka_Connector`
+   - **URL**: `https://your-connector.example.com` (your connector's public URL, no path)
+   - **External Credential**: select `Kafka Connector Webhook`
+3. Save
+
+**Grant Permission to Use the Credential:**
+
+1. **Setup** > Quick Find > search **"Permission Sets"** > **New**
+   - **Label**: `Kafka Webhook Access`
+   - Save
+2. Inside the permission set, click **External Credential Principal Access**
+3. Click **Edit** > move `Kafka_Connector_Webhook - Default` to **Enabled** > Save
+4. Click **Manage Assignments** > **Add Assignment** > select your user > **Assign**
+5. Log out and log back in to refresh the session
+
+#### Step 3: Create the Webhook Sender Apex Class
+
+This class dynamically queries **all fields** (standard + custom) for any object and sends them to the connector in CDC format.
+
+1. **Setup** > Quick Find > search **"Apex Classes"** > **New**
+2. Paste this code:
+
+```apex
+public class WebhookSender {
+
+    @future(callout=true)
+    public static void sendAsync(String recordId, String changeType, String objectName) {
+        Map<String, Schema.SObjectField> fieldMap = Schema.getGlobalDescribe()
+            .get(objectName).getDescribe().fields.getMap();
+
+        List<String> fieldNames = new List<String>();
+        for (String fieldName : fieldMap.keySet()) {
+            Schema.DescribeFieldResult fieldDesc = fieldMap.get(fieldName).getDescribe();
+            if (fieldDesc.isAccessible() && !fieldDesc.getName().contains('Address')) {
+                fieldNames.add(fieldDesc.getName());
+            }
+        }
+
+        String soql = 'SELECT ' + String.join(fieldNames, ', ')
+                     + ' FROM ' + objectName
+                     + ' WHERE Id = \'' + String.escapeSingleQuotes(recordId) + '\'';
+
+        List<SObject> records = Database.query(soql);
+        if (records.isEmpty()) {
+            sendPayload(recordId, objectName, changeType, new Map<String, Object>{'Id' => recordId});
+            return;
+        }
+
+        Map<String, Object> recordMap = new Map<String, Object>();
+        SObject record = records[0];
+        for (String fieldName : fieldNames) {
+            Object val = record.get(fieldName);
+            if (val != null) {
+                recordMap.put(fieldName, val);
+            }
+        }
+
+        sendPayload(recordId, objectName, changeType, recordMap);
+    }
+
+    @future(callout=true)
+    public static void sendDeleteAsync(String recordId, String objectName, String recordJson) {
+        Map<String, Object> recordMap = (Map<String, Object>) JSON.deserializeUntyped(recordJson);
+        sendPayload(recordId, objectName, 'DELETE', recordMap);
+    }
+
+    private static void sendPayload(String recordId, String objectName,
+                                     String changeType, Map<String, Object> recordFields) {
+        Map<String, Object> header = new Map<String, Object>{
+            'entityName' => objectName,
+            'recordIds' => new List<String>{recordId},
+            'changeType' => changeType,
+            'commitTimestamp' => System.currentTimeMillis()
+        };
+
+        Map<String, Object> payload = new Map<String, Object>();
+        payload.put('ChangeEventHeader', header);
+        payload.putAll(recordFields);
+
+        Map<String, Object> body = new Map<String, Object>{
+            'data' => new Map<String, Object>{
+                'payload' => payload,
+                'event' => new Map<String, Object>{'replayId' => 0}
+            },
+            'channel' => '/data/' + objectName + 'ChangeEvent'
+        };
+
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint('callout:Kafka_Connector');
+        req.setMethod('POST');
+        req.setHeader('Content-Type', 'application/json');
+        req.setBody(JSON.serialize(body));
+        req.setTimeout(30000);
+
+        Http http = new Http();
+        try {
+            HttpResponse res = http.send(req);
+            if (res.getStatusCode() != 200) {
+                System.debug(LoggingLevel.ERROR, 'Webhook failed: ' + res.getStatusCode() + ' ' + res.getBody());
+            }
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, 'Webhook error: ' + e.getMessage());
+        }
+    }
+}
+```
+
+3. Click **Save**
+
+**What this class does:**
+- `sendAsync()` — Dynamically discovers ALL fields (standard + custom) for the object, queries the full record, and sends it as a CDC-formatted HTTP POST
+- `sendDeleteAsync()` — Sends delete events using the record data from `Trigger.old` (since deleted records can't be re-queried)
+- `sendPayload()` — Builds the CDC payload format and sends via the Named Credential (includes `x-api-key` header automatically)
+- Uses `callout:Kafka_Connector` — references the Named Credential by API name, no hardcoded URLs or credentials
+
+**Do not modify the payload structure.** The connector's Salesforce strategy relies on these exact field names to detect and route events:
+
+| Field Path | Required Value | Purpose |
+|-----------|---------------|---------|
+| `data` | Object wrapper | Top-level container |
+| `data.payload` | Object with record fields | Record data + header |
+| `data.payload.ChangeEventHeader` | Object with metadata | Identifies event as Salesforce CDC |
+| `data.payload.ChangeEventHeader.entityName` | Object name (e.g., `"Account"`) | Determines Kafka topic |
+| `data.payload.ChangeEventHeader.changeType` | `CREATE`, `UPDATE`, `DELETE`, `UNDELETE` | Sets `__deleted` field |
+| `data.payload.Id` | Record ID | Used as message key |
+| `data.event.replayId` | Integer | Included in output for tracking |
+| `channel` | `/data/{Object}ChangeEvent` | Used for event format detection |
+
+Renaming any of these fields (e.g., `payload` to `body`, or `ChangeEventHeader` to `header`) will cause the connector to not recognize the event and route it to the unknown/default topic.
+
+#### Step 4: Create Apex Triggers per Object
+
+Create one trigger per Salesforce object you want to capture. The trigger calls the generic `WebhookSender` class.
+
+**For Account:**
+
+1. **Setup** > Quick Find > search **"Object Manager"**
+2. Click **Account** > **Triggers** (left sidebar) > **New**
+3. Paste:
+
+```apex
+trigger AccountToKafka on Account (after insert, after update, after delete, after undelete) {
+    List<SObject> records;
+    String changeType;
+
+    if (Trigger.isInsert) {
+        changeType = 'CREATE';
+        records = Trigger.new;
+    } else if (Trigger.isUpdate) {
+        changeType = 'UPDATE';
+        records = Trigger.new;
+    } else if (Trigger.isDelete) {
+        changeType = 'DELETE';
+        records = Trigger.old;
+    } else if (Trigger.isUndelete) {
+        changeType = 'UNDELETE';
+        records = Trigger.new;
+    }
+
+    for (SObject rec : records) {
+        if (changeType == 'DELETE') {
+            WebhookSender.sendDeleteAsync(rec.Id, 'Account', JSON.serialize(rec));
+        } else {
+            WebhookSender.sendAsync(rec.Id, changeType, 'Account');
+        }
+    }
+}
+```
+
+4. Click **Save**
+
+**For Contact:**
+
+1. **Object Manager** > **Contact** > **Triggers** > **New**
+2. Paste (same pattern, just change the object name):
+
+```apex
+trigger ContactToKafka on Contact (after insert, after update, after delete, after undelete) {
+    List<SObject> records;
+    String changeType;
+
+    if (Trigger.isInsert) {
+        changeType = 'CREATE';
+        records = Trigger.new;
+    } else if (Trigger.isUpdate) {
+        changeType = 'UPDATE';
+        records = Trigger.new;
+    } else if (Trigger.isDelete) {
+        changeType = 'DELETE';
+        records = Trigger.old;
+    } else if (Trigger.isUndelete) {
+        changeType = 'UNDELETE';
+        records = Trigger.new;
+    }
+
+    for (SObject rec : records) {
+        if (changeType == 'DELETE') {
+            WebhookSender.sendDeleteAsync(rec.Id, 'Contact', JSON.serialize(rec));
+        } else {
+            WebhookSender.sendAsync(rec.Id, changeType, 'Contact');
+        }
+    }
+}
+```
+
+3. Click **Save**
+
+**To add more objects** (Lead, Opportunity, Case, etc.), create a new trigger with the same pattern — only change the trigger name, object name in the `trigger ... on {Object}` line, and the `'Object'` string in the `WebhookSender` calls.
+
+#### Step 5: Configure the Connector
+
+```properties
+# Core connector settings
+camel.source.path.protocol=http
+camel.source.path.host=0.0.0.0
+camel.source.path.port=8080
+camel.source.endpoint.sync=true
+
+# Payload routing for Salesforce
+camel.source.payload.router.enabled=true
+camel.source.payload.router.type=salesforce
+camel.source.payload.router.topic.prefix=sf_
+
+# Flatten for upsert-friendly output
+camel.source.payload.router.flatten.detail=true
+camel.source.payload.router.flatten.detail.prefix=detail_
+camel.source.payload.router.include.event=false
+
+# Error handling
+camel.source.dlq.enabled=true
+camel.source.dlq.topic=sf_dlq
+errors.tolerance=all
+errors.log.enable=true
+
+# Snapshot (optional, for initial data load)
+camel.source.snapshot.mode=no_data
+camel.source.snapshot.signal.topic=sf_snapshot_signals
+camel.source.snapshot.salesforce.instance.url=https://myorg.my.salesforce.com
+camel.source.snapshot.salesforce.auth.client.id=your_consumer_key
+camel.source.snapshot.salesforce.auth.client.secret=your_consumer_secret
+camel.source.snapshot.salesforce.auth.username=your_username
+camel.source.snapshot.salesforce.auth.password=your_password_with_security_token
+```
+
+#### Important: URL Path and Topic Routing
+
+The Apex callout endpoint must have **no URL path** — just the base URL via the Named Credential:
+
+```apex
+// Correct — no path, payload router determines topic from payload content
+req.setEndpoint('callout:Kafka_Connector');
+
+// Wrong — /webhook path conflicts with CamelDynamicTopicTransform
+req.setEndpoint('callout:Kafka_Connector/webhook');
+```
+
+If your connector config includes `CamelDynamicTopicTransform` (which sets topic from the HTTP path), a path like `/webhook` overrides the payload router's topic. With no path, the payload router's topic (e.g., `sf_account_events`) is preserved through the transform chain.
+
+#### Step 6: Test End-to-End
+
+1. **Create an Account** in Salesforce:
+   - Click **Accounts** tab > **New**
+   - Enter Account Name: `Test Company`
+   - Fill in other fields (Phone, Billing City, etc.)
+   - Click **Save**
+
+2. **Check Kafka** (within a few seconds):
+   ```bash
+   kafka-console-consumer --bootstrap-server localhost:9092 --topic sf_account_events --from-beginning
+   ```
+   You should see a record with all Account fields, `changeType: CREATE`, and `__deleted: false`.
+
+3. **Update the Account**:
+   - Open the Account > edit the Name > Save
+   - Check Kafka — should see `changeType: UPDATE` with all current field values
+
+4. **Delete the Account**:
+   - Open the Account > Delete
+   - Check Kafka — should see `changeType: DELETE` and `__deleted: true`
+
+#### Troubleshooting
+
+| Issue | Check |
+|-------|-------|
+| No events in Kafka | Setup > Quick Find > "Apex Jobs" — check for failed `@future` jobs |
+| "Unauthorized endpoint" error | Verify Named Credential URL is correct and External Credential Principal Access is granted via Permission Set |
+| "Insufficient access" on trigger | Verify your profile has "Modify All Data" and the trigger is active |
+| Events in wrong topic | Verify `req.setEndpoint` has no URL path (just `callout:Kafka_Connector`) |
+| Missing fields in payload | Check field-level security — the user must have read access to all fields |
+| Trigger not firing | Object Manager > your object > Triggers — verify status is "Active" |
+
+#### Limitations
+
+- **`@future` method limit**: 50 per transaction. Bulk operations (e.g., Data Loader importing 50+ records) may hit this limit.
+- **Callout timeout**: 120 seconds max per callout.
+- **One trigger per object**: You need to create a trigger for each Salesforce object you want to capture.
+- **No replay**: If the connector is down when Salesforce sends the event, it's lost. Use the snapshot feature to backfill missed data.
+- **Field discovery**: The `WebhookSender` dynamically discovers all fields at runtime, including custom fields added later. No code changes needed when fields change.
+
+---### Important: URL Path and Topic Routing
+
+When using the payload router (`camel.source.payload.router.enabled=true`), the connector automatically determines the Kafka topic from the payload content. The Apex callout endpoint should have **no URL path** — just the base URL:
+
+```apex
+// Correct — no path, payload router determines topic
+req.setEndpoint('callout:Kafka_Connector');
+
+// Wrong — /webhook path may conflict with CamelDynamicTopicTransform
+req.setEndpoint('callout:Kafka_Connector/webhook');
+```
+
+If your connector config includes the `CamelDynamicTopicTransform` (which sets topic from the HTTP path), having a path like `/webhook` will override the payload router's topic. With no path, the payload router's topic (`sf_account_events`) is preserved through the transform chain.
+
+### Verifying the Setup
+
+1. **Test with a simple curl:**
+   ```bash
+   curl -X POST http://your-connector-host:8080 \
+     -H "Content-Type: application/json" \
+     -d '{
+       "data": {
+         "payload": {
+           "ChangeEventHeader": {
+             "entityName": "Account",
+             "recordIds": ["001TEST"],
+             "changeType": "CREATE"
+           },
+           "Id": "001TEST",
+           "Name": "Test Account"
+         },
+         "event": {"replayId": 1}
+       },
+       "channel": "/data/AccountChangeEvent"
+     }'
+   ```
+
+2. **Check Kafka for the record:**
+   ```bash
+   kafka-console-consumer --bootstrap-server localhost:9092 --topic sf_account_events --from-beginning
+   ```
+
+3. **Verify the key and value:**
+   - Key should contain `{"Id": "001TEST"}`
+   - Value should contain `{"Id": "001TEST", "Name": "Test Account", "__deleted": false}`
+
 ---
 
 ## 4. Fan-out Configuration

@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+
 /**
  * OAuth2 client for Salesforce API authentication.
  * Handles token acquisition and refresh using username-password flow.
@@ -40,6 +41,7 @@ public class SalesforceAuthClient {
         this.password = password;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
+                .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
         this.objectMapper = new ObjectMapper();
     }
@@ -50,7 +52,14 @@ public class SalesforceAuthClient {
             return accessToken;
         }
 
-        String loginUrl = instanceUrl + "/services/oauth2/token";
+        // Normalize instance URL: strip trailing slash and Lightning paths
+        String baseUrl = instanceUrl.replaceAll("/+$", "");
+        if (baseUrl.contains(".lightning.force.com")) {
+            // Lightning URL — convert to My Domain API URL
+            baseUrl = baseUrl.replace(".lightning.force.com", ".my.salesforce.com");
+        }
+        String loginUrl = baseUrl + "/services/oauth2/token";
+        LOG.info("Salesforce OAuth2 login URL: {}", loginUrl);
         String body = "grant_type=password"
                 + "&client_id=" + encode(clientId)
                 + "&client_secret=" + encode(clientSecret)

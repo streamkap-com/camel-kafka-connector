@@ -33,7 +33,7 @@ public class SnapshotSignalConsumer {
         props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true");
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "10");
 
@@ -41,7 +41,7 @@ public class SnapshotSignalConsumer {
         this.consumer.subscribe(Collections.singletonList(signalTopic));
         this.objectMapper = new ObjectMapper();
 
-        LOG.info("Snapshot signal consumer initialized, topic: {}, group: {}", signalTopic, groupId);
+        LOG.info("Snapshot signal consumer initialized, topic: {}, group: {}, bootstrap: {}", signalTopic, groupId, bootstrapServers);
     }
 
     @SuppressWarnings("unchecked")
@@ -114,7 +114,13 @@ public class SnapshotSignalConsumer {
 
         @SuppressWarnings("unchecked")
         public List<String> getObjects() {
-            Object objects = data.get("objects");
+            // Support both formats:
+            // Debezium: "data-collections": ["Account"]
+            // Ours:     "objects": ["Account"]
+            Object objects = data.get("data-collections");
+            if (objects == null) {
+                objects = data.get("objects");
+            }
             if (objects instanceof List) {
                 return (List<String>) objects;
             }
@@ -122,7 +128,16 @@ public class SnapshotSignalConsumer {
         }
 
         public SnapshotType getSnapshotType() {
-            String typeStr = (String) data.getOrDefault("snapshot_type", "INCREMENTAL");
+            // Support both formats:
+            // Debezium: "type": "INCREMENTAL"
+            // Ours:     "snapshot_type": "INCREMENTAL"
+            String typeStr = (String) data.get("type");
+            if (typeStr == null) {
+                typeStr = (String) data.get("snapshot_type");
+            }
+            if (typeStr == null) {
+                typeStr = "INCREMENTAL";
+            }
             try {
                 return SnapshotType.valueOf(typeStr.toUpperCase());
             } catch (IllegalArgumentException e) {
@@ -132,6 +147,9 @@ public class SnapshotSignalConsumer {
 
         public int getChunkSize(int defaultSize) {
             Object size = data.get("chunk_size");
+            if (size == null) {
+                size = data.get("chunk-size");
+            }
             if (size instanceof Number) {
                 return ((Number) size).intValue();
             }
@@ -139,7 +157,11 @@ public class SnapshotSignalConsumer {
         }
 
         public String getAdditionalCondition() {
-            return (String) data.get("additional_condition");
+            String condition = (String) data.get("additional_condition");
+            if (condition == null) {
+                condition = (String) data.get("additional-condition");
+            }
+            return condition;
         }
 
         @Override

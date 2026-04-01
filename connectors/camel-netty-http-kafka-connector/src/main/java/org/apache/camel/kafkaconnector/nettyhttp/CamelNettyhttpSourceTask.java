@@ -284,7 +284,7 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
         return new SourceRecord(
                 sr.getSourcePartition(),
                 sr.getSourceOffset(),
-                sr.getObjectName().toLowerCase() + "_events",
+                sr.getObjectName(),
                 null, keySchema, key,
                 bodySchema, payload,
                 System.currentTimeMillis());
@@ -436,8 +436,20 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
     }
 
     private static String resolveBootstrapServers(Map<String, String> props) {
-        return props.getOrDefault("camel.connector.bootstrap.servers",
-                props.getOrDefault("bootstrap.servers", "localhost:9092"));
+        // Check multiple possible bootstrap server configs in priority order
+        String[] keys = {
+                "camel.connector.bootstrap.servers",
+                "signal.kafka.bootstrap.servers",
+                "bootstrap.servers",
+                "producer.bootstrap.servers"
+        };
+        for (String key : keys) {
+            String value = props.get(key);
+            if (value != null && !value.trim().isEmpty()) {
+                return value;
+            }
+        }
+        return "localhost:9092";
     }
 
     private static List<String> parseCsv(String csv) {

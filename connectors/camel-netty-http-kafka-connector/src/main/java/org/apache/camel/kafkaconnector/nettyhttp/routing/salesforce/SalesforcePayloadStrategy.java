@@ -106,7 +106,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
         // Build output payload
         Map<String, Object> outputPayload = buildCdcPayload(cdcPayload, data, header, changeType);
 
-        String topicSuffix = entityName.toLowerCase() + "_events";
+        String topicSuffix = entityName;
         String idField = flattenDetail ? flattenDetailPrefix + "Id" : "Id";
         Map<String, Object> key = recordId != null ? keyOf(idField, recordId) : Collections.emptyMap();
 
@@ -133,7 +133,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
 
         Map<String, Object> key = recordId != null ? keyOf("Id", recordId) : Collections.emptyMap();
 
-        return Collections.singletonList(createRecord("gap_events", outputPayload, eventType, key));
+        return Collections.singletonList(createRecord("gap", outputPayload, eventType, key));
     }
 
     @SuppressWarnings("unchecked")
@@ -261,7 +261,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
 
         outputPayload.put(DELETED_FIELD, isDeleted);
 
-        String topicSuffix = objectType.toLowerCase() + "_events";
+        String topicSuffix = objectType;
         String idField = flattenDetail ? flattenDetailPrefix + "Id" : "Id";
         Map<String, Object> key = recordId != null ? keyOf(idField, recordId) : Collections.emptyMap();
 
@@ -314,7 +314,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
         // Platform events are never deletes
         outputPayload.put(DELETED_FIELD, false);
 
-        String topicSuffix = eventName.toLowerCase() + "_events";
+        String topicSuffix = eventName;
         String idField = flattenDetail ? flattenDetailPrefix + "Id" : "Id";
         Map<String, Object> key = recordId != null ? keyOf(idField, recordId) : Collections.emptyMap();
 

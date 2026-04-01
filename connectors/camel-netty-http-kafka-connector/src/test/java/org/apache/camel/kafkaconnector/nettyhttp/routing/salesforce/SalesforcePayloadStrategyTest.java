@@ -47,7 +47,7 @@ public class SalesforcePayloadStrategyTest {
         List<RoutedRecord> records = strategy.route(payload);
 
         assertEquals(1, records.size());
-        assertEquals("sf_account_events", records.get(0).getTopic());
+        assertEquals("sf_Account", records.get(0).getTopic());
         assertEquals("Account.CREATE", records.get(0).getEventType());
         assertEquals("001D000000KnaXjIAJ", records.get(0).getKeyFields().get("Id"));
 
@@ -65,7 +65,7 @@ public class SalesforcePayloadStrategyTest {
 
         List<RoutedRecord> records = strategy.route(payload);
 
-        assertEquals("sf_contact_events", records.get(0).getTopic());
+        assertEquals("sf_Contact", records.get(0).getTopic());
         assertEquals("003xx000001", records.get(0).getKeyFields().get("Id"));
     }
 
@@ -76,7 +76,7 @@ public class SalesforcePayloadStrategyTest {
 
         List<RoutedRecord> records = strategy.route(payload);
 
-        assertEquals("sf_invoice__c_events", records.get(0).getTopic());
+        assertEquals("sf_Invoice__c", records.get(0).getTopic());
     }
 
     // ===================== CDC: UPDATE =====================
@@ -88,7 +88,7 @@ public class SalesforcePayloadStrategyTest {
 
         List<RoutedRecord> records = strategy.route(payload);
 
-        assertEquals("sf_account_events", records.get(0).getTopic());
+        assertEquals("sf_Account", records.get(0).getTopic());
         assertEquals("Account.UPDATE", records.get(0).getEventType());
 
         Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
@@ -104,7 +104,7 @@ public class SalesforcePayloadStrategyTest {
 
         List<RoutedRecord> records = strategy.route(payload);
 
-        assertEquals("sf_account_events", records.get(0).getTopic());
+        assertEquals("sf_Account", records.get(0).getTopic());
 
         Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
         assertEquals(true, result.get("__deleted"));
@@ -132,7 +132,7 @@ public class SalesforcePayloadStrategyTest {
 
         List<RoutedRecord> records = strategy.route(payload);
 
-        assertEquals("sf_gap_events", records.get(0).getTopic());
+        assertEquals("sf_gap", records.get(0).getTopic());
         assertEquals("Account.GAP_CREATE", records.get(0).getEventType());
 
         Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
@@ -148,7 +148,7 @@ public class SalesforcePayloadStrategyTest {
 
         List<RoutedRecord> records = strategy.route(payload);
 
-        assertEquals("sf_gap_events", records.get(0).getTopic());
+        assertEquals("sf_gap", records.get(0).getTopic());
 
         Map<String, Object> result = objectMapper.readValue(records.get(0).getPayload(), Map.class);
         assertEquals(true, result.get("__deleted"));
@@ -161,7 +161,7 @@ public class SalesforcePayloadStrategyTest {
 
         List<RoutedRecord> records = strategy.route(payload);
 
-        assertEquals("sf_gap_events", records.get(0).getTopic());
+        assertEquals("sf_gap", records.get(0).getTopic());
         assertFalse(records.get(0).hasKey());
     }
 
@@ -290,7 +290,7 @@ public class SalesforcePayloadStrategyTest {
         List<RoutedRecord> records = strategy.route(payload);
 
         assertEquals(1, records.size());
-        assertEquals("sf_accountstream_events", records.get(0).getTopic());
+        assertEquals("sf_AccountStream", records.get(0).getTopic());
         assertEquals("AccountStream.created", records.get(0).getEventType());
         assertEquals("001xx000001", records.get(0).getKeyFields().get("Id"));
 
@@ -367,7 +367,7 @@ public class SalesforcePayloadStrategyTest {
         List<RoutedRecord> records = strategy.route(payload);
 
         assertEquals(1, records.size());
-        assertEquals("sf_low_ink__e_events", records.get(0).getTopic());
+        assertEquals("sf_Low_Ink__e", records.get(0).getTopic());
         assertEquals("Low_Ink__e.published", records.get(0).getEventType());
         assertEquals("e03xx000000001", records.get(0).getKeyFields().get("Id"));
 
@@ -475,7 +475,7 @@ public class SalesforcePayloadStrategyTest {
         Map<String, Object> payload = buildCdcPayload("Account", "CREATE",
                 "001xx", Map.of("Name", "Test"));
 
-        assertEquals("account_events", noPrefixStrategy.route(payload).get(0).getTopic());
+        assertEquals("Account", noPrefixStrategy.route(payload).get(0).getTopic());
     }
 
     @Test
@@ -486,7 +486,7 @@ public class SalesforcePayloadStrategyTest {
         Map<String, Object> payload = buildCdcPayload("Account", "CREATE",
                 "001xx", Map.of("Name", "Test"));
 
-        assertEquals("prod_sf_account_events", customStrategy.route(payload).get(0).getTopic());
+        assertEquals("prod_sf_Account", customStrategy.route(payload).get(0).getTopic());
     }
 
     // ===================== HELPERS =====================
