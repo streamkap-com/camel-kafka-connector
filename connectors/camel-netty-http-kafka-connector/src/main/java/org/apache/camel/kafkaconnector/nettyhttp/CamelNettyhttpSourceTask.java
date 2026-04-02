@@ -34,6 +34,8 @@ import org.apache.camel.StreamCache;
 import org.apache.camel.kafkaconnector.CamelSourceConnectorConfig;
 import org.apache.camel.kafkaconnector.CamelSourceRecord;
 import org.apache.camel.kafkaconnector.CamelSourceTask;
+import org.apache.camel.kafkaconnector.nettyhttp.cdc.CdcSubscriber;
+import org.apache.camel.kafkaconnector.nettyhttp.cdc.CdcSubscriberFactory;
 import org.apache.camel.kafkaconnector.nettyhttp.dlq.SourceDlqProducer;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.PayloadRouter;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.PayloadRoutingException;
@@ -67,6 +69,7 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
     private PayloadRouter payloadRouter;
     private SourceDlqProducer dlqProducer;
     private SnapshotEngine snapshotEngine;
+    private CdcSubscriber cdcSubscriber;
     private final ConcurrentHashMap<String, AtomicInteger> exchangeRefCounts = new ConcurrentHashMap<>();
 
     @Override
@@ -130,9 +133,27 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             dlqProducer = new SourceDlqProducer(dlqBootstrap, dlqTopic);
         }
 
-        // Snapshot only makes sense with payload routing (provider-specific API queries)
+        // Snapshot and CDC only make sense with payload routing
         if (payloadRouterEnabled) {
             initializeSnapshotEngine(config, props);
+            initializeCdcSubscriber(config, props);
+        }
+    }
+
+    private void initializeCdcSubscriber(CamelNettyhttpSourceConnectorConfig config, Map<String, String> props) {
+        boolean cdcEnabled = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_CDC_ENABLED_CONF);
+        if (!cdcEnabled) {
+            return;
+        }
+
+        String routerType = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_CONF);
+        String channelsStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_CDC_CHANNELS_CONF);
+        List<String> channels = parseCsv(channelsStr);
+
+        cdcSubscriber = CdcSubscriberFactory.create(routerType, channels, props);
+        if (cdcSubscriber != null) {
+            cdcSubscriber.start();
+            LOG.info("CDC subscriber enabled for provider '{}', channels: {}", routerType, channels);
         }
     }
 
@@ -214,13 +235,44 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             }
         }
 
+        // Drain native CDC events from provider-specific subscriber
+        if (cdcSubscriber != null) {
+            List<String> cdcEvents = cdcSubscriber.drainEvents(100);
+            for (String cdcJson : cdcEvents) {
+                try {
+                    List<RoutedRecord> routedRecords = payloadRouter.route(cdcJson);
+                    for (RoutedRecord routed : routedRecords) {
+                        Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(routed.getPayload());
+                        Object recordKey;
+                        Schema recordKeySchema;
+                        if (routed.hasKey()) {
+                            Struct keyStruct = buildKeyStruct(routed.getTopic() + "_key", routed.getKeyFields());
+                            recordKeySchema = keyStruct.schema();
+                            recordKey = keyStruct;
+                        } else {
+                            recordKey = null;
+                            recordKeySchema = null;
+                        }
+                        records.add(new SourceRecord(
+                                Collections.singletonMap("cdc_source", routed.getTopic()),
+                                Collections.emptyMap(),
+                                routed.getTopic(), null, recordKeySchema, recordKey,
+                                bodySchema, routed.getPayload(), System.currentTimeMillis()));
+                    }
+                } catch (Exception e) {
+                    LOG.error("Failed to process CDC event: {}", e.getMessage());
+                    sendToDlq(cdcJson, null, null, e);
+                }
+            }
+        }
+
         // Check if CDC streaming should be active
         if (snapshotEngine != null && !snapshotEngine.shouldStream()) {
             LOG.debug("CDC streaming paused during blocking snapshot");
             return records.isEmpty() ? null : records;
         }
 
-        // CDC path: process incoming webhook exchanges
+        // Webhook CDC path: process incoming HTTP exchanges
         LOG.debug("Number of records waiting an ack: {}", freeSlots.capacity() - freeSlots.size());
         final long startPollEpochMilli = Instant.now().toEpochMilli();
 
@@ -270,13 +322,10 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
 
         Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(payload);
 
-        Object recordId = sr.getRecordId();
         Schema keySchema = null;
         Object key = null;
-        if (recordId != null) {
-            Map<String, Object> keyFields = new java.util.LinkedHashMap<>();
-            keyFields.put("Id", recordId);
-            Struct keyStruct = buildKeyStruct(sr.getObjectName() + "_key", keyFields);
+        if (sr.hasKey()) {
+            Struct keyStruct = buildKeyStruct(sr.getObjectName() + "_key", sr.getKeyFields());
             keySchema = keyStruct.schema();
             key = keyStruct;
         }
@@ -330,6 +379,9 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
     @Override
     public void stop() {
         super.stop();
+        if (cdcSubscriber != null) {
+            cdcSubscriber.stop();
+        }
         if (snapshotEngine != null) {
             snapshotEngine.shutdown();
         }

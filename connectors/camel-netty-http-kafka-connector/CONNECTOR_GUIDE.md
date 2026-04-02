@@ -243,7 +243,7 @@ public class WebhookSender {
         List<String> fieldNames = new List<String>();
         for (String fieldName : fieldMap.keySet()) {
             Schema.DescribeFieldResult fieldDesc = fieldMap.get(fieldName).getDescribe();
-            if (fieldDesc.isAccessible() && !fieldDesc.getName().contains('Address')) {
+            if (fieldDesc.isAccessible()) {
                 fieldNames.add(fieldDesc.getName());
             }
         }
@@ -261,10 +261,7 @@ public class WebhookSender {
         Map<String, Object> recordMap = new Map<String, Object>();
         SObject record = records[0];
         for (String fieldName : fieldNames) {
-            Object val = record.get(fieldName);
-            if (val != null) {
-                recordMap.put(fieldName, val);
-            }
+            recordMap.put(fieldName, record.get(fieldName));
         }
 
         sendPayload(recordId, objectName, changeType, recordMap);

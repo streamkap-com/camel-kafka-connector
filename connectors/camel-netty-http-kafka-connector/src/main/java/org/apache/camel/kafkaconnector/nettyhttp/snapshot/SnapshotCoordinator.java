@@ -346,8 +346,13 @@ public class SnapshotCoordinator {
                     Map<String, String> sourcePartition = segment.toSourcePartition(connectorName);
                     Map<String, Object> sourceOffset = context.toOffset();
 
+                    // Build key fields using the ChunkReader's id field name
+                    String idFieldName = chunkReader.getIdFieldName();
+                    Map<String, Object> keyFields = new java.util.LinkedHashMap<>();
+                    keyFields.put(idFieldName, entry.getKey());
+
                     SnapshotRecord snapshotRecord = new SnapshotRecord(
-                            segment.getObjectName(), entry.getKey(), entry.getValue(),
+                            segment.getObjectName(), entry.getValue(), keyFields,
                             sourcePartition, sourceOffset);
                     outputQueue.put(snapshotRecord);
                 }

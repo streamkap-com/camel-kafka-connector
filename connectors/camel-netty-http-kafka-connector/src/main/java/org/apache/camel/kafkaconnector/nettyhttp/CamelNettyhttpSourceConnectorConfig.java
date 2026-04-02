@@ -132,6 +132,15 @@ public class CamelNettyhttpSourceConnectorConfig
     public static final String CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DEFAULT = "";
     public static final String CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DOC = "Salesforce password (with security token appended).";
 
+    // Native CDC subscription configuration
+    public static final String CAMEL_SOURCE_CDC_ENABLED_CONF = "camel.source.cdc.enabled";
+    public static final Boolean CAMEL_SOURCE_CDC_ENABLED_DEFAULT = false;
+    public static final String CAMEL_SOURCE_CDC_ENABLED_DOC = "Enable native CDC subscription. When enabled, the connector subscribes directly to the source system's change stream (e.g., Salesforce Streaming API) without needing webhook triggers.";
+
+    public static final String CAMEL_SOURCE_CDC_CHANNELS_CONF = "camel.source.cdc.channels";
+    public static final String CAMEL_SOURCE_CDC_CHANNELS_DEFAULT = "";
+    public static final String CAMEL_SOURCE_CDC_CHANNELS_DOC = "Comma-separated CDC channels to subscribe to. Provider-specific format. Salesforce: '/data/ChangeEvents' (all objects) or '/data/AccountChangeEvent,/data/ContactChangeEvent'.";
+
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_CONF = "camel.source.path.protocol";
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DOC = "The protocol to use which is either http, https or proxy (consumer only). One of: [http] [https] [proxy]";
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DEFAULT = null;
@@ -594,6 +603,9 @@ public class CamelNettyhttpSourceConnectorConfig
         conf.define(CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_DOC);
         conf.define(CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_DOC);
         conf.define(CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DOC);
+        // Native CDC config
+        conf.define(CAMEL_SOURCE_CDC_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_CDC_ENABLED_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_CDC_ENABLED_DOC);
+        conf.define(CAMEL_SOURCE_CDC_CHANNELS_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_CDC_CHANNELS_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_CDC_CHANNELS_DOC);
         // Netty-HTTP specific config
         conf.define(CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DEFAULT, ConfigDef.Importance.HIGH, CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DOC);
         conf.define(CAMEL_SOURCE_NETTYHTTP_PATH_HOST_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_NETTYHTTP_PATH_HOST_DEFAULT, ConfigDef.Importance.HIGH, CAMEL_SOURCE_NETTYHTTP_PATH_HOST_DOC);

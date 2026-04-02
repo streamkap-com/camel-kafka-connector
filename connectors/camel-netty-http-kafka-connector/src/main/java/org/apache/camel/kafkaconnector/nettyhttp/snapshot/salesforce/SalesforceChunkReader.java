@@ -427,7 +427,6 @@ public class SalesforceChunkReader implements ChunkReader {
         Object records = result.get("records");
         if (records instanceof List) {
             List<Map<String, Object>> recordList = (List<Map<String, Object>>) records;
-            // Remove Salesforce attributes metadata from each record
             for (Map<String, Object> record : recordList) {
                 record.remove("attributes");
             }
