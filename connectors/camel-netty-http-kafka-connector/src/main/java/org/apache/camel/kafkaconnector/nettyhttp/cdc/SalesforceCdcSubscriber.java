@@ -58,6 +58,7 @@ public class SalesforceCdcSubscriber implements CdcSubscriber {
         this.channels = channels != null ? channels : Collections.emptyList();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
+                .cookieHandler(new java.net.CookieManager())
                 .build();
     }
 
