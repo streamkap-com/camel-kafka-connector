@@ -152,6 +152,19 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
 
         cdcSubscriber = CdcSubscriberFactory.create(routerType, channels, props);
         if (cdcSubscriber != null) {
+            // Restore replay positions from stored offsets
+            Map<String, Object> storedOffset = context.offsetStorageReader()
+                    .offset(Collections.singletonMap("cdc", "true"));
+            if (storedOffset != null) {
+                for (String channel : channels) {
+                    Object replayId = storedOffset.get("replayId_" + channel);
+                    if (replayId instanceof Number) {
+                        cdcSubscriber.setReplayId(channel, ((Number) replayId).longValue());
+                        LOG.info("Restored CDC replayId for {}: {}", channel, replayId);
+                    }
+                }
+            }
+
             cdcSubscriber.start();
             LOG.info("CDC subscriber enabled for provider '{}', channels: {}", routerType, channels);
         }
@@ -253,9 +266,17 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
                             recordKey = null;
                             recordKeySchema = null;
                         }
+
+                        // All CDC records share one partition per channel so replayId
+                        // tracks the latest position across all object types
+                        Map<String, String> sourcePartition = Collections.singletonMap("cdc", "true");
+                        Map<String, Object> sourceOffset = new HashMap<>();
+                        for (Map.Entry<String, Long> rp : cdcSubscriber.getReplayPositions().entrySet()) {
+                            sourceOffset.put("replayId_" + rp.getKey(), rp.getValue());
+                        }
+
                         records.add(new SourceRecord(
-                                Collections.singletonMap("cdc_source", routed.getTopic()),
-                                Collections.emptyMap(),
+                                sourcePartition, sourceOffset,
                                 routed.getTopic(), null, recordKeySchema, recordKey,
                                 bodySchema, routed.getPayload(), System.currentTimeMillis()));
                     }
@@ -343,6 +364,12 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
     public void commitRecord(SourceRecord record, RecordMetadata metadata) {
         if (payloadRouter == null) {
             super.commitRecord(record, metadata);
+            return;
+        }
+
+        // CDC and snapshot records are plain SourceRecords — no Camel exchange to ack
+        if (!(record instanceof CamelSourceRecord)) {
+            LOG.debug("Committing non-Camel record (CDC/snapshot): {}", record.topic());
             return;
         }
 

@@ -10,6 +10,12 @@ import java.util.Map;
  */
 public interface CdcSubscriber {
 
+    /**
+     * Set the replay/offset position for a channel before starting.
+     * Used to resume from stored offsets on restart.
+     */
+    void setReplayId(String channel, long replayId);
+
     void start();
 
     /**
