@@ -31,6 +31,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
     private boolean flattenDetail = false;
     private String flattenDetailPrefix = "";
     private boolean includeEvent = true;
+    private Set<String> allowedObjects = null; // null = all objects allowed
 
     @Override
     public void configure(String topicPrefix, UnknownTypeBehavior unknownTypeBehavior, String defaultTopic) {
@@ -41,10 +42,12 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
 
     @Override
     public void configureAdvanced(Set<String> fanoutFields, boolean flattenDetail,
-                                  String flattenDetailPrefix, boolean includeEvent) {
+                                  String flattenDetailPrefix, boolean includeEvent,
+                                  Set<String> allowedObjects) {
         this.flattenDetail = flattenDetail;
         this.flattenDetailPrefix = flattenDetailPrefix != null ? flattenDetailPrefix : "";
         this.includeEvent = includeEvent;
+        this.allowedObjects = (allowedObjects != null && !allowedObjects.isEmpty()) ? allowedObjects : null;
     }
 
     @Override
@@ -87,6 +90,11 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
         String entityName = (String) header.get("entityName");
         if (entityName == null || entityName.isEmpty()) {
             throw new PayloadRoutingException("Salesforce CDC event missing entityName in ChangeEventHeader");
+        }
+
+        // Filter: if allowedObjects is set, only route selected objects
+        if (allowedObjects != null && !allowedObjects.contains(entityName)) {
+            return handleUnknownType(payload, entityName);
         }
 
         String changeType = (String) header.get("changeType");

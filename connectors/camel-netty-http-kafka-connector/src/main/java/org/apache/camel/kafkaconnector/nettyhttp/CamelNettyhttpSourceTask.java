@@ -114,9 +114,15 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             String flattenDetailPrefix = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_CONF);
             boolean includeEvent = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_CONF);
 
+            // Allowed objects filter (from topic.include.list.user.defined)
+            String allowedObjectsStr = props.get("topic.include.list.user.defined");
+            Set<String> allowedObjects = (allowedObjectsStr != null && !allowedObjectsStr.trim().isEmpty())
+                    ? new HashSet<>(parseCsv(allowedObjectsStr))
+                    : null;
+
             PayloadRoutingStrategy strategy = PayloadRouter.createStrategy(routerType);
             strategy.configure(topicPrefix, unknownBehavior, defaultTopic);
-            strategy.configureAdvanced(fanoutFields, flattenDetail, flattenDetailPrefix, includeEvent);
+            strategy.configureAdvanced(fanoutFields, flattenDetail, flattenDetailPrefix, includeEvent, allowedObjects);
             payloadRouter = new PayloadRouter(strategy);
             LOG.info("Payload routing enabled with type '{}', topic prefix '{}', fanout fields: {}, flatten detail: {}",
                     routerType, topicPrefix, fanoutFields, flattenDetail);
