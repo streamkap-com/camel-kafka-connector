@@ -20,6 +20,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
     private static final Logger LOG = LoggerFactory.getLogger(SalesforcePayloadStrategy.class);
 
     private static final String DELETED_FIELD = "__deleted";
+    private static final String CHANGE_TYPE_FIELD = "__changeType";
     private static final String CHANGE_EVENT_HEADER = "ChangeEventHeader";
 
     private String topicPrefix = "";
@@ -137,6 +138,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
         }
         outputPayload.put("_gap", true);
         outputPayload.putAll(header);
+        outputPayload.put(CHANGE_TYPE_FIELD, changeType);
         outputPayload.put(DELETED_FIELD, isDeleteChangeType(changeType));
 
         Map<String, Object> key = recordId != null ? keyOf("Id", recordId) : Collections.emptyMap();
@@ -200,6 +202,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
                 result.put("replayId", event.get("replayId"));
             }
 
+            result.put(CHANGE_TYPE_FIELD, changeType);
             result.put(DELETED_FIELD, isDeleted);
             return result;
         }
@@ -220,6 +223,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
             result.put("replayId", event.get("replayId"));
         }
 
+        result.put(CHANGE_TYPE_FIELD, changeType);
         result.put(DELETED_FIELD, isDeleted);
         return result;
     }
@@ -267,6 +271,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
             }
         }
 
+        outputPayload.put(CHANGE_TYPE_FIELD, operationType.toUpperCase());
         outputPayload.put(DELETED_FIELD, isDeleted);
 
         String topicSuffix = objectType;
@@ -320,6 +325,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
         }
 
         // Platform events are never deletes
+        outputPayload.put(CHANGE_TYPE_FIELD, "PUBLISHED");
         outputPayload.put(DELETED_FIELD, false);
 
         String topicSuffix = eventName;

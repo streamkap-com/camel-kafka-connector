@@ -351,8 +351,12 @@ public class SnapshotCoordinator {
                     Map<String, Object> keyFields = new java.util.LinkedHashMap<>();
                     keyFields.put(idFieldName, entry.getKey());
 
+                    Map<String, Object> recordData = entry.getValue();
+                    recordData.put("__changeType", "SNAPSHOT");
+                    recordData.put("__deleted", false);
+
                     SnapshotRecord snapshotRecord = new SnapshotRecord(
-                            segment.getObjectName(), entry.getValue(), keyFields,
+                            segment.getObjectName(), recordData, keyFields,
                             sourcePartition, sourceOffset);
                     outputQueue.put(snapshotRecord);
                 }
