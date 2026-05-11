@@ -45,10 +45,7 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
     private static TypeConverter typeConverter;
     private Class<?> fieldTargetType;
     private boolean addDeleteField;
-
-    // Cache for nested struct schemas to ensure consistent schema instances
-    private final Map<String, Schema> schemaCache = new java.util.HashMap<>();
-
+    
     @Override
     public R apply(R record) {
         final Schema schema = operatingSchema(record);
@@ -64,6 +61,11 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
         // Handle null values
         if (originalValue == null) {
             return null;
+        }
+
+        // Already a Struct (e.g. struct keys from payload routing) — pass through
+        if (originalValue instanceof org.apache.kafka.connect.data.Struct) {
+            return originalValue;
         }
 
         // Special handling for JSON string to Map conversion
@@ -127,26 +129,7 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
             schemaName = generateNestedStructSchemaName(convertedMap);
         }
 
-        // Check if we have a cached schema for this name
-        Schema cachedSchema = schemaCache.get(schemaName);
-        if (cachedSchema != null && schemaHasAllFields(cachedSchema, convertedMap)) {
-            Struct struct = new Struct(cachedSchema);
-            // Populate struct with values
-            for (Map.Entry<String, Object> entry : convertedMap.entrySet()) {
-                Object value = entry.getValue();
-                if (value instanceof Map && !(value instanceof java.util.Date)) {
-                    value = mapToStruct((Map<String, Object>) value, record, false);
-                } else if (value instanceof java.util.List) {
-                    value = convertListElements((java.util.List<?>) value, record);
-                }
-                if (cachedSchema.field(entry.getKey()) != null) {
-                    struct.put(entry.getKey(), value);
-                }
-            }
-            return struct;
-        }
-
-        // Build schema for the first time
+        // Build schema from current record's actual data
         SchemaBuilder schemaBuilder = SchemaBuilder.struct().name(schemaName);
 
         // Build schema - recursively process nested structures to get actual schemas
@@ -181,7 +164,6 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
         }
 
         Schema schema = schemaBuilder.build();
-        schemaCache.put(schemaName, schema);
 
         Struct struct = new Struct(schema);
 
@@ -200,23 +182,6 @@ public abstract class CamelTypeConverterTransform<R extends ConnectRecord<R>> ex
         }
 
         return struct;
-    }
-
-    /**
-     * Check if a cached schema has all the fields needed for the current map.
-     * Used to validate if we can reuse a cached schema.
-     *
-     * @param schema the cached schema
-     * @param map the current map being processed
-     * @return true if schema has all fields from map
-     */
-    private boolean schemaHasAllFields(Schema schema, Map<String, Object> map) {
-        for (String key : map.keySet()) {
-            if (schema.field(key) == null) {
-                return false;
-            }
-        }
-        return true;
     }
 
     /**
