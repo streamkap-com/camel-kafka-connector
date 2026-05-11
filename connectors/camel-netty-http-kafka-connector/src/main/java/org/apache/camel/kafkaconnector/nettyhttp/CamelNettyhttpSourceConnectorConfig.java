@@ -74,6 +74,73 @@ public class CamelNettyhttpSourceConnectorConfig
     public static final String CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_DEFAULT = "";
     public static final String CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_DOC = "Bootstrap servers for the DLQ producer. If empty, uses the connector's bootstrap servers from the worker config.";
 
+    // Snapshot configuration
+    public static final String CAMEL_SOURCE_SNAPSHOT_MODE_CONF = "camel.source.snapshot.mode";
+    public static final String CAMEL_SOURCE_SNAPSHOT_MODE_DEFAULT = "no_data";
+    public static final String CAMEL_SOURCE_SNAPSHOT_MODE_DOC = "Snapshot mode. 'initial' = blocking snapshot on first run then CDC. 'initial_only' = snapshot then stop. 'no_data' = CDC only. Signal-triggered snapshots work in all modes.";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_OBJECTS_CONF = "camel.source.snapshot.objects";
+    public static final String CAMEL_SOURCE_SNAPSHOT_OBJECTS_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_OBJECTS_DOC = "Comma-separated list of objects to snapshot on initial mode (e.g. Account,Contact,Lead).";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_SIGNAL_TOPIC_CONF = "camel.source.snapshot.signal.topic";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SIGNAL_TOPIC_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SIGNAL_TOPIC_DOC = "Kafka topic for snapshot signal commands. Required for on-demand incremental/blocking snapshots.";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_SIGNAL_POLL_INTERVAL_MS_CONF = "camel.source.snapshot.signal.poll.interval.ms";
+    public static final Long CAMEL_SOURCE_SNAPSHOT_SIGNAL_POLL_INTERVAL_MS_DEFAULT = 5000L;
+    public static final String CAMEL_SOURCE_SNAPSHOT_SIGNAL_POLL_INTERVAL_MS_DOC = "How often to poll the signal topic for snapshot commands (ms).";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_MAX_THREADS_CONF = "camel.source.snapshot.max.threads";
+    public static final Integer CAMEL_SOURCE_SNAPSHOT_MAX_THREADS_DEFAULT = 4;
+    public static final String CAMEL_SOURCE_SNAPSHOT_MAX_THREADS_DOC = "Maximum threads for parallel snapshot execution. Applies to both multi-object and single-object segment splitting.";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_CHUNK_SIZE_CONF = "camel.source.snapshot.chunk.size";
+    public static final Integer CAMEL_SOURCE_SNAPSHOT_CHUNK_SIZE_DEFAULT = 1000;
+    public static final String CAMEL_SOURCE_SNAPSHOT_CHUNK_SIZE_DOC = "Number of records per snapshot chunk.";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_CHUNK_DELAY_MS_CONF = "camel.source.snapshot.chunk.delay.ms";
+    public static final Long CAMEL_SOURCE_SNAPSHOT_CHUNK_DELAY_MS_DEFAULT = 500L;
+    public static final String CAMEL_SOURCE_SNAPSHOT_CHUNK_DELAY_MS_DOC = "Delay between snapshot chunks (ms). Helps with API rate limiting and CDC dedup window.";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_ENABLED_CONF = "camel.source.snapshot.parallel.segments.enabled";
+    public static final Boolean CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_ENABLED_DEFAULT = true;
+    public static final String CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_ENABLED_DOC = "Whether to split large single objects into parallel segments for faster snapshot.";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_MIN_ROWS_CONF = "camel.source.snapshot.parallel.segments.min.rows";
+    public static final Long CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_MIN_ROWS_DEFAULT = 10000L;
+    public static final String CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_MIN_ROWS_DOC = "Minimum row count to trigger parallel segment splitting.";
+
+    // Salesforce snapshot API configuration
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_INSTANCE_URL_CONF = "camel.source.snapshot.salesforce.instance.url";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_INSTANCE_URL_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_INSTANCE_URL_DOC = "Salesforce instance URL (e.g. https://myorg.salesforce.com).";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_ID_CONF = "camel.source.snapshot.salesforce.auth.client.id";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_ID_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_ID_DOC = "Salesforce OAuth2 client ID.";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_CONF = "camel.source.snapshot.salesforce.auth.client.secret";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_DOC = "Salesforce OAuth2 client secret.";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_CONF = "camel.source.snapshot.salesforce.auth.username";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_DOC = "Salesforce username.";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_CONF = "camel.source.snapshot.salesforce.auth.password";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DOC = "Salesforce password (with security token appended).";
+
+    // Native CDC subscription configuration
+    public static final String CAMEL_SOURCE_CDC_ENABLED_CONF = "camel.source.cdc.enabled";
+    public static final Boolean CAMEL_SOURCE_CDC_ENABLED_DEFAULT = false;
+    public static final String CAMEL_SOURCE_CDC_ENABLED_DOC = "Enable native CDC subscription. When enabled, the connector subscribes directly to the source system's change stream (e.g., Salesforce Streaming API) without needing webhook triggers.";
+
+    public static final String CAMEL_SOURCE_CDC_CHANNELS_CONF = "camel.source.cdc.channels";
+    public static final String CAMEL_SOURCE_CDC_CHANNELS_DEFAULT = "";
+    public static final String CAMEL_SOURCE_CDC_CHANNELS_DOC = "Comma-separated CDC channels to subscribe to. Provider-specific format. Salesforce: '/data/ChangeEvents' (all objects) or '/data/AccountChangeEvent,/data/ContactChangeEvent'.";
+
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_CONF = "camel.source.path.protocol";
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DOC = "The protocol to use which is either http, https or proxy (consumer only). One of: [http] [https] [proxy]";
     public static final String CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DEFAULT = null;
@@ -521,6 +588,24 @@ public class CamelNettyhttpSourceConnectorConfig
         conf.define(CAMEL_SOURCE_DLQ_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_DLQ_ENABLED_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_DLQ_ENABLED_DOC);
         conf.define(CAMEL_SOURCE_DLQ_TOPIC_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_DLQ_TOPIC_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_DLQ_TOPIC_DOC);
         conf.define(CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_DOC);
+        // Snapshot config
+        conf.define(CAMEL_SOURCE_SNAPSHOT_MODE_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_MODE_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_MODE_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_OBJECTS_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_OBJECTS_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_OBJECTS_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SIGNAL_TOPIC_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SIGNAL_TOPIC_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SIGNAL_TOPIC_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SIGNAL_POLL_INTERVAL_MS_CONF, ConfigDef.Type.LONG, CAMEL_SOURCE_SNAPSHOT_SIGNAL_POLL_INTERVAL_MS_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_SNAPSHOT_SIGNAL_POLL_INTERVAL_MS_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_MAX_THREADS_CONF, ConfigDef.Type.INT, CAMEL_SOURCE_SNAPSHOT_MAX_THREADS_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_MAX_THREADS_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_CHUNK_SIZE_CONF, ConfigDef.Type.INT, CAMEL_SOURCE_SNAPSHOT_CHUNK_SIZE_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_CHUNK_SIZE_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_CHUNK_DELAY_MS_CONF, ConfigDef.Type.LONG, CAMEL_SOURCE_SNAPSHOT_CHUNK_DELAY_MS_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_SNAPSHOT_CHUNK_DELAY_MS_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_ENABLED_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_ENABLED_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_MIN_ROWS_CONF, ConfigDef.Type.LONG, CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_MIN_ROWS_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_MIN_ROWS_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SF_INSTANCE_URL_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SF_INSTANCE_URL_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_INSTANCE_URL_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_ID_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_ID_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_ID_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DOC);
+        // Native CDC config
+        conf.define(CAMEL_SOURCE_CDC_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_CDC_ENABLED_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_CDC_ENABLED_DOC);
+        conf.define(CAMEL_SOURCE_CDC_CHANNELS_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_CDC_CHANNELS_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_CDC_CHANNELS_DOC);
         // Netty-HTTP specific config
         conf.define(CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DEFAULT, ConfigDef.Importance.HIGH, CAMEL_SOURCE_NETTYHTTP_PATH_PROTOCOL_DOC);
         conf.define(CAMEL_SOURCE_NETTYHTTP_PATH_HOST_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_NETTYHTTP_PATH_HOST_DEFAULT, ConfigDef.Importance.HIGH, CAMEL_SOURCE_NETTYHTTP_PATH_HOST_DOC);

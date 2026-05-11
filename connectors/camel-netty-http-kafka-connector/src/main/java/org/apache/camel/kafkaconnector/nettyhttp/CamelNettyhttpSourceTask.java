@@ -34,12 +34,21 @@ import org.apache.camel.StreamCache;
 import org.apache.camel.kafkaconnector.CamelSourceConnectorConfig;
 import org.apache.camel.kafkaconnector.CamelSourceRecord;
 import org.apache.camel.kafkaconnector.CamelSourceTask;
+import org.apache.camel.kafkaconnector.nettyhttp.cdc.CdcSubscriber;
+import org.apache.camel.kafkaconnector.nettyhttp.cdc.CdcSubscriberFactory;
 import org.apache.camel.kafkaconnector.nettyhttp.dlq.SourceDlqProducer;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.PayloadRouter;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.PayloadRoutingException;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.PayloadRoutingStrategy;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.RoutedRecord;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.UnknownTypeBehavior;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.ChunkReader;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.ChunkReaderFactory;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.SnapshotCoordinator;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.SnapshotEngine;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.SnapshotMode;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.SnapshotRecord;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.SnapshotSignalConsumer;
 import org.apache.camel.kafkaconnector.utils.SchemaHelper;
 import org.apache.camel.kafkaconnector.utils.TaskHelper;
 import org.apache.camel.support.UnitOfWorkHelper;
@@ -55,9 +64,12 @@ import org.slf4j.LoggerFactory;
 public class CamelNettyhttpSourceTask extends CamelSourceTask {
 
     private static final Logger LOG = LoggerFactory.getLogger(CamelNettyhttpSourceTask.class);
+    private static final com.fasterxml.jackson.databind.ObjectMapper OBJECT_MAPPER = new com.fasterxml.jackson.databind.ObjectMapper();
 
     private PayloadRouter payloadRouter;
     private SourceDlqProducer dlqProducer;
+    private SnapshotEngine snapshotEngine;
+    private CdcSubscriber cdcSubscriber;
     private final ConcurrentHashMap<String, AtomicInteger> exchangeRefCounts = new ConcurrentHashMap<>();
 
     @Override
@@ -97,19 +109,20 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
 
             // Advanced routing config
             String fanoutFieldsStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FANOUT_FIELDS_CONF);
-            Set<String> fanoutFields = (fanoutFieldsStr == null || fanoutFieldsStr.trim().isEmpty())
-                    ? Collections.emptySet()
-                    : Arrays.stream(fanoutFieldsStr.split(","))
-                            .map(String::trim)
-                            .filter(s -> !s.isEmpty())
-                            .collect(Collectors.toSet());
+            Set<String> fanoutFields = new HashSet<>(parseCsv(fanoutFieldsStr));
             boolean flattenDetail = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_CONF);
             String flattenDetailPrefix = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_CONF);
             boolean includeEvent = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_CONF);
 
+            // Allowed objects filter (from topic.include.list.user.defined)
+            String allowedObjectsStr = props.get("topic.include.list.user.defined");
+            Set<String> allowedObjects = (allowedObjectsStr != null && !allowedObjectsStr.trim().isEmpty())
+                    ? new HashSet<>(parseCsv(allowedObjectsStr))
+                    : null;
+
             PayloadRoutingStrategy strategy = PayloadRouter.createStrategy(routerType);
             strategy.configure(topicPrefix, unknownBehavior, defaultTopic);
-            strategy.configureAdvanced(fanoutFields, flattenDetail, flattenDetailPrefix, includeEvent);
+            strategy.configureAdvanced(fanoutFields, flattenDetail, flattenDetailPrefix, includeEvent, allowedObjects);
             payloadRouter = new PayloadRouter(strategy);
             LOG.info("Payload routing enabled with type '{}', topic prefix '{}', fanout fields: {}, flatten detail: {}",
                     routerType, topicPrefix, fanoutFields, flattenDetail);
@@ -121,13 +134,108 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             String dlqTopic = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_DLQ_TOPIC_CONF);
             String dlqBootstrap = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_DLQ_BOOTSTRAP_SERVERS_CONF);
             if (dlqBootstrap == null || dlqBootstrap.trim().isEmpty()) {
-                // Fall back to worker's bootstrap servers
-                dlqBootstrap = props.getOrDefault("camel.connector.bootstrap.servers",
-                        props.getOrDefault("bootstrap.servers", "localhost:9092"));
+                dlqBootstrap = resolveBootstrapServers(props);
             }
             dlqProducer = new SourceDlqProducer(dlqBootstrap, dlqTopic);
         }
+
+        // Snapshot and CDC only make sense with payload routing
+        if (payloadRouterEnabled) {
+            initializeSnapshotEngine(config, props);
+            initializeCdcSubscriber(config, props);
+        }
     }
+
+    private void initializeCdcSubscriber(CamelNettyhttpSourceConnectorConfig config, Map<String, String> props) {
+        boolean cdcEnabled = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_CDC_ENABLED_CONF);
+        if (!cdcEnabled) {
+            return;
+        }
+
+        String routerType = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_CONF);
+        String channelsStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_CDC_CHANNELS_CONF);
+        List<String> channels = parseCsv(channelsStr);
+
+        cdcSubscriber = CdcSubscriberFactory.create(routerType, channels, props);
+        if (cdcSubscriber != null) {
+            // Restore replay positions from stored offsets
+            Map<String, Object> storedOffset = context.offsetStorageReader()
+                    .offset(Collections.singletonMap("cdc", "true"));
+            if (storedOffset != null) {
+                for (String channel : channels) {
+                    Object replayId = storedOffset.get("replayId_" + channel);
+                    if (replayId instanceof Number) {
+                        cdcSubscriber.setReplayId(channel, ((Number) replayId).longValue());
+                        LOG.info("Restored CDC replayId for {}: {}", channel, replayId);
+                    }
+                }
+            }
+
+            cdcSubscriber.start();
+            LOG.info("CDC subscriber enabled for provider '{}', channels: {}", routerType, channels);
+        }
+    }
+
+    private void initializeSnapshotEngine(CamelNettyhttpSourceConnectorConfig config, Map<String, String> props) {
+        String snapshotModeStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_MODE_CONF);
+        SnapshotMode snapshotMode;
+        try {
+            snapshotMode = SnapshotMode.valueOf(snapshotModeStr.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            snapshotMode = SnapshotMode.NO_DATA;
+        }
+
+        String signalTopic = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_SIGNAL_TOPIC_CONF);
+        boolean hasSignalTopic = signalTopic != null && !signalTopic.trim().isEmpty();
+        boolean needsSnapshot = snapshotMode != SnapshotMode.NO_DATA || hasSignalTopic;
+
+        if (!needsSnapshot) {
+            LOG.info("Snapshot disabled (mode={}, no signal topic)", snapshotMode);
+            return;
+        }
+
+        // Create chunk reader via factory — null if provider doesn't support snapshots
+        String routerType = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_CONF);
+        ChunkReader chunkReader = ChunkReaderFactory.create(routerType, props);
+
+        if (chunkReader == null) {
+            LOG.info("Snapshot not available for provider '{}' — no ChunkReader implementation. " +
+                    "Snapshot mode and signal topic will be ignored.", routerType);
+            return;
+        }
+
+        int maxThreads = config.getInt(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_MAX_THREADS_CONF);
+        int chunkSize = config.getInt(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_CHUNK_SIZE_CONF);
+        long chunkDelayMs = config.getLong(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_CHUNK_DELAY_MS_CONF);
+        boolean parallelSegments = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_ENABLED_CONF);
+        long parallelSegmentsMinRows = config.getLong(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_PARALLEL_SEGMENTS_MIN_ROWS_CONF);
+        long signalPollIntervalMs = config.getLong(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_SIGNAL_POLL_INTERVAL_MS_CONF);
+
+        String objectsStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_OBJECTS_CONF);
+        List<String> initialObjects = parseCsv(objectsStr);
+
+        String connectorName = props.getOrDefault("name", "camel-netty-http");
+
+        SnapshotCoordinator coordinator = new SnapshotCoordinator(
+                chunkReader, maxThreads, chunkSize, chunkDelayMs,
+                parallelSegments, parallelSegmentsMinRows, connectorName);
+
+        SnapshotSignalConsumer signalConsumer = null;
+        if (hasSignalTopic) {
+            String bootstrapServers = resolveBootstrapServers(props);
+            String groupId = connectorName + "-snapshot-signals";
+            signalConsumer = new SnapshotSignalConsumer(bootstrapServers, signalTopic, groupId);
+        }
+
+        snapshotEngine = new SnapshotEngine(snapshotMode, coordinator, signalConsumer,
+                chunkSize, initialObjects, connectorName, signalPollIntervalMs);
+
+        snapshotEngine.start(context);
+
+        LOG.info("Snapshot engine initialized: mode={}, signal topic={}, objects={}, threads={}",
+                snapshotMode, signalTopic, initialObjects, maxThreads);
+    }
+
 
     @Override
     public synchronized List<SourceRecord> poll() {
@@ -136,14 +244,68 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             return super.poll();
         }
 
-        // Payload routing mode
+        List<SourceRecord> records = new ArrayList<>();
+
+        // Poll snapshot engine for signals and snapshot records
+        if (snapshotEngine != null) {
+            List<SnapshotRecord> snapshotRecords = snapshotEngine.poll();
+            for (SnapshotRecord sr : snapshotRecords) {
+                records.add(snapshotRecordToSourceRecord(sr));
+            }
+        }
+
+        // Drain native CDC events from provider-specific subscriber
+        if (cdcSubscriber != null) {
+            List<String> cdcEvents = cdcSubscriber.drainEvents(100);
+            for (String cdcJson : cdcEvents) {
+                try {
+                    List<RoutedRecord> routedRecords = payloadRouter.route(cdcJson);
+                    for (RoutedRecord routed : routedRecords) {
+                        Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(routed.getPayload());
+                        Object recordKey;
+                        Schema recordKeySchema;
+                        if (routed.hasKey()) {
+                            Struct keyStruct = buildKeyStruct(routed.getTopic() + "_key", routed.getKeyFields());
+                            recordKeySchema = keyStruct.schema();
+                            recordKey = keyStruct;
+                        } else {
+                            recordKey = null;
+                            recordKeySchema = null;
+                        }
+
+                        // All CDC records share one partition per channel so replayId
+                        // tracks the latest position across all object types
+                        Map<String, String> sourcePartition = Collections.singletonMap("cdc", "true");
+                        Map<String, Object> sourceOffset = new HashMap<>();
+                        for (Map.Entry<String, Long> rp : cdcSubscriber.getReplayPositions().entrySet()) {
+                            sourceOffset.put("replayId_" + rp.getKey(), rp.getValue());
+                        }
+
+                        records.add(new SourceRecord(
+                                sourcePartition, sourceOffset,
+                                routed.getTopic(), null, recordKeySchema, recordKey,
+                                bodySchema, routed.getPayload(), System.currentTimeMillis()));
+                    }
+                } catch (Exception e) {
+                    LOG.error("Failed to process CDC event: {}", e.getMessage());
+                    sendToDlq(cdcJson, null, null, e);
+                }
+            }
+        }
+
+        // Check if CDC streaming should be active
+        if (snapshotEngine != null && !snapshotEngine.shouldStream()) {
+            LOG.debug("CDC streaming paused during blocking snapshot");
+            return records.isEmpty() ? null : records;
+        }
+
+        // Webhook CDC path: process incoming HTTP exchanges
         LOG.debug("Number of records waiting an ack: {}", freeSlots.capacity() - freeSlots.size());
         final long startPollEpochMilli = Instant.now().toEpochMilli();
 
         long remaining = remaining(startPollEpochMilli, maxPollDuration);
         long collectedRecords = 0L;
 
-        List<SourceRecord> records = new ArrayList<>();
         while (collectedRecords < maxBatchPollSize && freeSlots.size() >= 1 && remaining > 0) {
             Exchange exchange = consumer.receive(remaining);
             if (exchange == null) {
@@ -177,10 +339,43 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
         return records.isEmpty() ? null : records;
     }
 
+    private SourceRecord snapshotRecordToSourceRecord(SnapshotRecord sr) {
+        String payload;
+        try {
+            payload = OBJECT_MAPPER.writeValueAsString(sr.getData());
+        } catch (Exception e) {
+            throw new ConnectException("Failed to serialize snapshot record", e);
+        }
+
+        Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(payload);
+
+        Schema keySchema = null;
+        Object key = null;
+        if (sr.hasKey()) {
+            Struct keyStruct = buildKeyStruct(sr.getObjectName() + "_key", sr.getKeyFields());
+            keySchema = keyStruct.schema();
+            key = keyStruct;
+        }
+
+        return new SourceRecord(
+                sr.getSourcePartition(),
+                sr.getSourceOffset(),
+                sr.getObjectName(),
+                null, keySchema, key,
+                bodySchema, payload,
+                System.currentTimeMillis());
+    }
+
     @Override
     public void commitRecord(SourceRecord record, RecordMetadata metadata) {
         if (payloadRouter == null) {
             super.commitRecord(record, metadata);
+            return;
+        }
+
+        // CDC and snapshot records are plain SourceRecords — no Camel exchange to ack
+        if (!(record instanceof CamelSourceRecord)) {
+            LOG.debug("Committing non-Camel record (CDC/snapshot): {}", record.topic());
             return;
         }
 
@@ -217,6 +412,12 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
     @Override
     public void stop() {
         super.stop();
+        if (cdcSubscriber != null) {
+            cdcSubscriber.stop();
+        }
+        if (snapshotEngine != null) {
+            snapshotEngine.shutdown();
+        }
         if (dlqProducer != null) {
             dlqProducer.close();
         }
@@ -251,20 +452,11 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
         for (RoutedRecord routed : routedRecords) {
             Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(routed.getPayload());
 
-            // Build struct key from routed record's key fields, or fall back to header-based key
             Object recordKey;
             Schema recordKeySchema;
             if (routed.hasKey()) {
-                Map<String, Object> keyFields = routed.getKeyFields();
-                SchemaBuilder keySchemaBuilder = SchemaBuilder.struct().name(routed.getTopic() + "_key");
-                for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
-                    keySchemaBuilder.field(kf.getKey(), SchemaHelper.buildSchemaBuilderForType(kf.getValue()));
-                }
-                recordKeySchema = keySchemaBuilder.build();
-                Struct keyStruct = new Struct(recordKeySchema);
-                for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
-                    keyStruct.put(kf.getKey(), kf.getValue());
-                }
+                Struct keyStruct = buildKeyStruct(routed.getTopic() + "_key", routed.getKeyFields());
+                recordKeySchema = keyStruct.schema();
                 recordKey = keyStruct;
             } else {
                 recordKey = messageHeaderKey;
@@ -313,6 +505,46 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             ((StreamCache) body).reset();
         }
         return exchange.getMessage().getBody(String.class);
+    }
+
+    private static Struct buildKeyStruct(String schemaName, Map<String, Object> keyFields) {
+        SchemaBuilder builder = SchemaBuilder.struct().name(schemaName);
+        for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
+            builder.field(kf.getKey(), SchemaHelper.buildSchemaBuilderForType(kf.getValue()));
+        }
+        Schema schema = builder.build();
+        Struct struct = new Struct(schema);
+        for (Map.Entry<String, Object> kf : keyFields.entrySet()) {
+            struct.put(kf.getKey(), kf.getValue());
+        }
+        return struct;
+    }
+
+    private static String resolveBootstrapServers(Map<String, String> props) {
+        // Check multiple possible bootstrap server configs in priority order
+        String[] keys = {
+                "camel.connector.bootstrap.servers",
+                "signal.kafka.bootstrap.servers",
+                "bootstrap.servers",
+                "producer.bootstrap.servers"
+        };
+        for (String key : keys) {
+            String value = props.get(key);
+            if (value != null && !value.trim().isEmpty()) {
+                return value;
+            }
+        }
+        return "localhost:9092";
+    }
+
+    private static List<String> parseCsv(String csv) {
+        if (csv == null || csv.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(csv.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toList());
     }
 
     private void acknowledgeExchange(Exchange exchange) {

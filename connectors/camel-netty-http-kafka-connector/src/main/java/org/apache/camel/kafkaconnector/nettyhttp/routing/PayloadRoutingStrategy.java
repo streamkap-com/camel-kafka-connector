@@ -11,6 +11,12 @@ public interface PayloadRoutingStrategy {
 
     default void configureAdvanced(Set<String> fanoutFields, boolean flattenDetail,
                                    String flattenDetailPrefix, boolean includeEvent) {
+        configureAdvanced(fanoutFields, flattenDetail, flattenDetailPrefix, includeEvent, null);
+    }
+
+    default void configureAdvanced(Set<String> fanoutFields, boolean flattenDetail,
+                                   String flattenDetailPrefix, boolean includeEvent,
+                                   Set<String> allowedObjects) {
         // Default no-op for backward compatibility
     }
 

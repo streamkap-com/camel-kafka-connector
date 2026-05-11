@@ -226,7 +226,7 @@ public class PayloadRouterTest {
 
     @Test
     void testCreateStrategyUnknownType() {
-        assertThrows(PayloadRoutingException.class, () -> PayloadRouter.createStrategy("salesforce"));
+        assertThrows(PayloadRoutingException.class, () -> PayloadRouter.createStrategy("hubspot"));
     }
 
     @Test
