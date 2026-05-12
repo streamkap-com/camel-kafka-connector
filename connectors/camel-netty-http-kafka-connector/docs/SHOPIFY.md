@@ -140,22 +140,20 @@ Shopify will POST to this exact URL including the query string, and the connecto
 
 For additional security, enable HMAC verification (`camel.source.payload.router.shopify.hmac.secret`) to cryptographically verify that each webhook genuinely came from Shopify.
 
-### Step 1: Create a Custom App in Shopify
+### Step 1: Create an App in Dev Dashboard
 
-You need a custom app to get an Admin API access token for creating webhooks programmatically.
+> **Note**: As of January 2026, Shopify deprecated legacy custom apps. New apps must be created via the [Dev Dashboard](https://partners.shopify.com). Legacy custom apps with permanent tokens still work but cannot be created on new stores.
 
-1. In Shopify Admin, go to **Settings** > **Apps and sales channels**
-2. Click **Develop apps** (top right). If you don't see this, click **Allow custom app development** first.
-3. Click **Create an app**
-4. Name it (e.g., `Kafka Connector`) and click **Create app**
+1. Go to the [Shopify Partners Dashboard](https://partners.shopify.com) (create a partner account if needed)
+2. Click **Apps** > **Create app**
+3. Choose **Create app manually**
+4. Name it (e.g., `Kafka Connector`), set the App URL to your connector endpoint
+5. Click **Create app**
 
 ### Step 2: Configure API Scopes
 
-The app needs read scopes for each resource type you want to receive webhooks for.
-
-1. In your new app, click **Configuration**
-2. Under **Admin API integration**, click **Configure**
-3. Select the scopes based on which webhook topics you need:
+1. In your app, go to **Configuration**
+2. Under **Access scopes**, select the scopes based on which webhook topics you need:
 
 | Webhook Topics | Required Scope |
 |---|---|
@@ -174,16 +172,48 @@ The app needs read scopes for each resource type you want to receive webhooks fo
 
 > **Tip**: For a full CDC-style setup, select `read_orders`, `read_products`, `read_customers`, and `read_inventory` at minimum.
 
-### Step 3: Install the App and Get the Access Token
+### Step 3: Install the App and Get Credentials
 
-1. Click **API credentials** tab
-2. Under **Admin API access token**, click **Install app**
-3. Confirm the installation
-4. Click **Reveal token once** and copy it immediately. This token is shown only once.
+1. In your app, go to **Settings**
+2. Note the **Client ID** and **Client Secret**
+3. Install the app on your store:
+   - Go to your store's admin
+   - **Settings** > **Apps and sales channels** > **Develop apps** (or install from Partner Dashboard)
+   - Install your app and approve the scopes
 
-Save this token. You'll use it for:
-- Creating webhook subscriptions via the GraphQL API (below)
-- Snapshot backfill configuration (`camel.source.snapshot.shopify.access.token`)
+**Getting an access token** — two options:
+
+**Option A: Client Credentials Grant (recommended for Dev Dashboard apps)**
+
+Tokens auto-refresh every 24 hours. Use these connector config properties:
+```properties
+camel.source.snapshot.shopify.store.url=https://yourstore.myshopify.com
+camel.source.snapshot.shopify.client.id=YOUR_CLIENT_ID
+camel.source.snapshot.shopify.client.secret=YOUR_CLIENT_SECRET
+```
+
+The connector handles token acquisition and refresh automatically.
+
+To get a token manually for webhook registration (Step 4), use curl:
+```bash
+curl -X POST "https://YOUR-STORE.myshopify.com/admin/oauth/access_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "YOUR_CLIENT_ID",
+    "client_secret": "YOUR_CLIENT_SECRET",
+    "grant_type": "client_credentials"
+  }'
+```
+
+The response contains `access_token` (valid for 24 hours).
+
+**Option B: Static Access Token (legacy custom apps only)**
+
+If you have an existing legacy custom app with a permanent token:
+```properties
+camel.source.snapshot.shopify.store.url=https://yourstore.myshopify.com
+camel.source.snapshot.shopify.access.token=shpat_XXXXX
+```
 
 ### Step 4: Register Webhooks via GraphQL Admin API
 
@@ -362,8 +392,12 @@ The connector supports Debezium-style initial and signal-triggered snapshots for
 | `camel.source.snapshot.mode` | String | `no_data` | `initial` = snapshot on first run then webhooks. `initial_only` = snapshot then stop. `no_data` = webhooks only. |
 | `camel.source.snapshot.objects` | String | `""` | Objects to snapshot (e.g., `orders,products,customers`) |
 | `camel.source.snapshot.shopify.store.url` | String | `""` | Store URL (e.g., `https://mystore.myshopify.com`) |
-| `camel.source.snapshot.shopify.access.token` | Password | `""` | Admin API access token from a custom app |
+| `camel.source.snapshot.shopify.access.token` | Password | `""` | Static access token (legacy custom apps only) |
+| `camel.source.snapshot.shopify.client.id` | String | `""` | Client ID from Dev Dashboard (recommended) |
+| `camel.source.snapshot.shopify.client.secret` | Password | `""` | Client Secret from Dev Dashboard (recommended) |
 | `camel.source.snapshot.shopify.api.version` | String | `2024-10` | API version |
+
+**Authentication**: Provide either `access.token` (legacy) OR `client.id` + `client.secret` (Dev Dashboard). Client credentials tokens auto-refresh every 24 hours.
 
 ### Supported Snapshot Objects
 
@@ -437,7 +471,14 @@ camel.source.payload.router.topic.prefix=shopify_
 camel.source.snapshot.mode=initial
 camel.source.snapshot.objects=orders,products,customers
 camel.source.snapshot.shopify.store.url=https://mystore.myshopify.com
-camel.source.snapshot.shopify.access.token=shpat_xxxxxxxxxxxxx
+
+# Auth option 1: Dev Dashboard (recommended, auto-refreshes every 24h)
+camel.source.snapshot.shopify.client.id=YOUR_CLIENT_ID
+camel.source.snapshot.shopify.client.secret=YOUR_CLIENT_SECRET
+
+# Auth option 2: Legacy custom app (permanent token, uncomment if using legacy)
+# camel.source.snapshot.shopify.access.token=shpat_xxxxxxxxxxxxx
+
 camel.source.snapshot.shopify.api.version=2024-10
 
 # Signal topic for on-demand snapshots

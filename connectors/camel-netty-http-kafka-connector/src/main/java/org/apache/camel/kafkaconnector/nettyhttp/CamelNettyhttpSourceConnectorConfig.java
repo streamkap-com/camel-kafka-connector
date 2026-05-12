@@ -144,7 +144,15 @@ public class CamelNettyhttpSourceConnectorConfig
 
     public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_CONF = "camel.source.snapshot.shopify.access.token";
     public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_DEFAULT = "";
-    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_DOC = "Shopify Admin API access token from a custom app.";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_DOC = "Shopify Admin API access token. For legacy custom apps, this is a permanent token. For Dev Dashboard apps, leave empty and use client.id + client.secret instead (tokens auto-refresh every 24h).";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_ID_CONF = "camel.source.snapshot.shopify.client.id";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_ID_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_ID_DOC = "Shopify app Client ID from Dev Dashboard. Used with client.secret for OAuth2 client credentials grant (24h token auto-refresh).";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_SECRET_CONF = "camel.source.snapshot.shopify.client.secret";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_SECRET_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_SECRET_DOC = "Shopify app Client Secret from Dev Dashboard. Used with client.id for OAuth2 client credentials grant.";
 
     public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_CONF = "camel.source.snapshot.shopify.api.version";
     public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_DEFAULT = "2024-10";
@@ -626,6 +634,8 @@ public class CamelNettyhttpSourceConnectorConfig
         // Shopify snapshot config
         conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_STORE_URL_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_STORE_URL_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_STORE_URL_DOC);
         conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_ID_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_ID_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_ID_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_SECRET_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_SECRET_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_SECRET_DOC);
         conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_DOC);
         // Native CDC config
         conf.define(CAMEL_SOURCE_CDC_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_CDC_ENABLED_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_CDC_ENABLED_DOC);
