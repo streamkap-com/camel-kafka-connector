@@ -6,6 +6,7 @@ import java.util.Map;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.salesforce.SalesforcePayloadStrategy;
+import org.apache.camel.kafkaconnector.nettyhttp.routing.shopify.ShopifyPayloadStrategy;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.zendesk.ZendeskPayloadStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +43,26 @@ public class PayloadRouter {
         return records;
     }
 
+    @SuppressWarnings("unchecked")
+    public List<RoutedRecord> route(String jsonBody, Map<String, Object> headers) {
+        if (jsonBody == null || jsonBody.trim().isEmpty()) {
+            LOG.warn("Received empty or null payload, skipping");
+            return Collections.emptyList();
+        }
+
+        Map<String, Object> payload;
+        try {
+            payload = objectMapper.readValue(jsonBody, Map.class);
+        } catch (Exception e) {
+            LOG.error("Failed to parse JSON payload: {}", e.getMessage());
+            throw new PayloadRoutingException("Invalid JSON payload", e);
+        }
+
+        List<RoutedRecord> records = strategy.route(payload, headers);
+        LOG.debug("Payload routed to {} record(s) (with headers)", records.size());
+        return records;
+    }
+
     public static PayloadRoutingStrategy createStrategy(String type) {
         if (type == null || type.trim().isEmpty()) {
             throw new PayloadRoutingException("Payload router type cannot be empty");
@@ -52,9 +73,11 @@ public class PayloadRouter {
                 return new ZendeskPayloadStrategy();
             case "salesforce":
                 return new SalesforcePayloadStrategy();
+            case "shopify":
+                return new ShopifyPayloadStrategy();
             default:
                 throw new PayloadRoutingException("Unknown payload router type: '" + type
-                        + "'. Supported types: zendesk, salesforce");
+                        + "'. Supported types: zendesk, salesforce, shopify");
         }
     }
 }

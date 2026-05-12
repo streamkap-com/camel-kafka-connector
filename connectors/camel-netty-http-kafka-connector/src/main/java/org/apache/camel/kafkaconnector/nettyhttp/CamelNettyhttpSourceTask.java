@@ -123,6 +123,16 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             PayloadRoutingStrategy strategy = PayloadRouter.createStrategy(routerType);
             strategy.configure(topicPrefix, unknownBehavior, defaultTopic);
             strategy.configureAdvanced(fanoutFields, flattenDetail, flattenDetailPrefix, includeEvent, allowedObjects);
+
+            // Shopify-specific: HMAC verification
+            if ("shopify".equalsIgnoreCase(routerType)) {
+                String hmacSecret = config.getPassword(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_CONF).value();
+                if (hmacSecret != null && !hmacSecret.isEmpty()) {
+                    strategy.configureHmac(hmacSecret);
+                    LOG.info("Shopify HMAC verification enabled");
+                }
+            }
+
             payloadRouter = new PayloadRouter(strategy);
             LOG.info("Payload routing enabled with type '{}', topic prefix '{}', fanout fields: {}, flatten detail: {}",
                     routerType, topicPrefix, fanoutFields, flattenDetail);
@@ -281,10 +291,14 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
                             sourceOffset.put("replayId_" + rp.getKey(), rp.getValue());
                         }
 
-                        records.add(new SourceRecord(
+                        SourceRecord cdcRecord = new SourceRecord(
                                 sourcePartition, sourceOffset,
                                 routed.getTopic(), null, recordKeySchema, recordKey,
-                                bodySchema, routed.getPayload(), System.currentTimeMillis()));
+                                bodySchema, routed.getPayload(), System.currentTimeMillis());
+                        if (routed.getOp() != null) {
+                            cdcRecord.headers().addString("__op", routed.getOp());
+                        }
+                        records.add(cdcRecord);
                     }
                 } catch (Exception e) {
                     LOG.error("Failed to process CDC event: {}", e.getMessage());
@@ -357,13 +371,15 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             key = keyStruct;
         }
 
-        return new SourceRecord(
+        SourceRecord record = new SourceRecord(
                 sr.getSourcePartition(),
                 sr.getSourceOffset(),
                 sr.getObjectName(),
                 null, keySchema, key,
                 bodySchema, payload,
                 System.currentTimeMillis());
+        record.headers().addString("__op", "r");
+        return record;
     }
 
     @Override
@@ -431,7 +447,11 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
         final Schema messageKeySchema = messageHeaderKey != null ? SchemaHelper.buildSchemaBuilderForType(messageHeaderKey) : null;
         final long timestamp = calculateTimestamp(exchange);
 
-        List<RoutedRecord> routedRecords = payloadRouter.route(bodyString);
+        Map<String, Object> exchangeHeaders = exchange.getMessage().hasHeaders()
+                ? new HashMap<>(exchange.getMessage().getHeaders())
+                : new HashMap<>();
+        exchangeHeaders.put("__rawBody", bodyString);
+        List<RoutedRecord> routedRecords = payloadRouter.route(bodyString, exchangeHeaders);
 
         if (routedRecords.isEmpty()) {
             acknowledgeExchange(exchange);
@@ -469,6 +489,9 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
 
             camelRecord.setEventType(routed.getEventType());
             camelRecord.setSourceExchangeId(exchangeId);
+            if (routed.getOp() != null) {
+                camelRecord.headers().addString("__op", routed.getOp());
+            }
 
             if (mapHeaders && exchange.getMessage().hasHeaders()) {
                 setAdditionalHeaders(camelRecord, exchange.getMessage().getHeaders(), HEADER_CAMEL_PREFIX);

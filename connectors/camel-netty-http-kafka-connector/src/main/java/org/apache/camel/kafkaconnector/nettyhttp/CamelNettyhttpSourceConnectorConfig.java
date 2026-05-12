@@ -61,6 +61,11 @@ public class CamelNettyhttpSourceConnectorConfig
     public static final Boolean CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_DEFAULT = true;
     public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_DOC = "Whether to include the 'event' field in the output record. The event field contains change-specific data (e.g. comment added, status changed) which varies per event type. Set to false for upsert/state-table use cases where only the entity state (detail) matters. Set to true for append/audit-log use cases where change history is needed.";
 
+    // Shopify-specific config
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_CONF = "camel.source.payload.router.shopify.hmac.secret";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_DEFAULT = "";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_DOC = "Shopify app client secret for HMAC-SHA256 webhook signature verification. When set, every incoming webhook is verified against the X-Shopify-Hmac-Sha256 header. Leave empty to disable verification.";
+
     // Source DLQ configuration
     public static final String CAMEL_SOURCE_DLQ_ENABLED_CONF = "camel.source.dlq.enabled";
     public static final Boolean CAMEL_SOURCE_DLQ_ENABLED_DEFAULT = false;
@@ -131,6 +136,19 @@ public class CamelNettyhttpSourceConnectorConfig
     public static final String CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_CONF = "camel.source.snapshot.salesforce.auth.password";
     public static final String CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DEFAULT = "";
     public static final String CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DOC = "Salesforce password (with security token appended).";
+
+    // Shopify snapshot API configuration
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_STORE_URL_CONF = "camel.source.snapshot.shopify.store.url";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_STORE_URL_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_STORE_URL_DOC = "Shopify store URL (e.g. https://mystore.myshopify.com).";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_CONF = "camel.source.snapshot.shopify.access.token";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_DOC = "Shopify Admin API access token from a custom app.";
+
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_CONF = "camel.source.snapshot.shopify.api.version";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_DEFAULT = "2024-10";
+    public static final String CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_DOC = "Shopify Admin API version (e.g. 2024-10).";
 
     // Native CDC subscription configuration
     public static final String CAMEL_SOURCE_CDC_ENABLED_CONF = "camel.source.cdc.enabled";
@@ -584,6 +602,8 @@ public class CamelNettyhttpSourceConnectorConfig
         conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_DOC);
         conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_DOC);
         conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_DOC);
+        // Shopify config
+        conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_DOC);
         // Source DLQ config
         conf.define(CAMEL_SOURCE_DLQ_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_DLQ_ENABLED_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_DLQ_ENABLED_DOC);
         conf.define(CAMEL_SOURCE_DLQ_TOPIC_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_DLQ_TOPIC_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_DLQ_TOPIC_DOC);
@@ -603,6 +623,10 @@ public class CamelNettyhttpSourceConnectorConfig
         conf.define(CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_CLIENT_SECRET_DOC);
         conf.define(CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_USERNAME_DOC);
         conf.define(CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SF_PASSWORD_DOC);
+        // Shopify snapshot config
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_STORE_URL_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_STORE_URL_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_STORE_URL_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_ACCESS_TOKEN_DOC);
+        conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_DOC);
         // Native CDC config
         conf.define(CAMEL_SOURCE_CDC_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_CDC_ENABLED_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_CDC_ENABLED_DOC);
         conf.define(CAMEL_SOURCE_CDC_CHANNELS_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_CDC_CHANNELS_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_CDC_CHANNELS_DOC);
