@@ -67,6 +67,7 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
     private static final com.fasterxml.jackson.databind.ObjectMapper OBJECT_MAPPER = new com.fasterxml.jackson.databind.ObjectMapper();
 
     private PayloadRouter payloadRouter;
+    private String routerTopicPrefix = "";
     private SourceDlqProducer dlqProducer;
     private SnapshotEngine snapshotEngine;
     private CdcSubscriber cdcSubscriber;
@@ -96,6 +97,7 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
         if (payloadRouterEnabled) {
             String routerType = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_TYPE_CONF);
             String topicPrefix = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_TOPIC_PREFIX_CONF);
+            this.routerTopicPrefix = topicPrefix != null ? topicPrefix : "";
             String unknownBehaviorStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_UNKNOWN_BEHAVIOR_CONF);
             String defaultTopic = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_DEFAULT_TOPIC_CONF);
 
@@ -371,10 +373,11 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             key = keyStruct;
         }
 
+        String topic = routerTopicPrefix + sr.getObjectName();
         SourceRecord record = new SourceRecord(
                 sr.getSourcePartition(),
                 sr.getSourceOffset(),
-                sr.getObjectName(),
+                topic,
                 null, keySchema, key,
                 bodySchema, payload,
                 System.currentTimeMillis());

@@ -28,29 +28,29 @@ public class ShopifyChunkReader implements ChunkReader {
     private final ShopifyAuthClient authClient;
     private final ObjectMapper objectMapper;
 
-    // Map object names to GraphQL connection fields and their node fields
+    // Map object names to GraphQL connection fields, node fields, and count queries
     private static final Map<String, ObjectConfig> OBJECT_CONFIGS = new LinkedHashMap<>();
     static {
-        OBJECT_CONFIGS.put("orders", new ObjectConfig("orders",
+        OBJECT_CONFIGS.put("orders", new ObjectConfig("orders", "ordersCount",
                 "id name email createdAt updatedAt totalPriceSet { shopMoney { amount currencyCode } } "
                 + "displayFinancialStatus displayFulfillmentStatus cancelledAt closedAt "
                 + "customer { id email } "
                 + "lineItems(first: 50) { edges { node { id title quantity sku "
                 + "originalUnitPriceSet { shopMoney { amount currencyCode } } } } }"));
-        OBJECT_CONFIGS.put("products", new ObjectConfig("products",
+        OBJECT_CONFIGS.put("products", new ObjectConfig("products", "productsCount",
                 "id title handle status vendor productType createdAt updatedAt "
                 + "variants(first: 50) { edges { node { id title sku price inventoryQuantity } } } "
                 + "images(first: 10) { edges { node { id url altText } } }"));
-        OBJECT_CONFIGS.put("customers", new ObjectConfig("customers",
+        OBJECT_CONFIGS.put("customers", new ObjectConfig("customers", "customersCount",
                 "id firstName lastName email phone createdAt updatedAt state numberOfOrders "
                 + "addresses(first: 10) { address1 address2 city province country zip }"));
-        OBJECT_CONFIGS.put("draft_orders", new ObjectConfig("draftOrders",
+        OBJECT_CONFIGS.put("draft_orders", new ObjectConfig("draftOrders", "draftOrdersCount",
                 "id name status createdAt updatedAt "
                 + "lineItems(first: 50) { edges { node { id title quantity "
                 + "originalUnitPriceSet { shopMoney { amount currencyCode } } } } }"));
-        OBJECT_CONFIGS.put("collections", new ObjectConfig("collections",
+        OBJECT_CONFIGS.put("collections", new ObjectConfig("collections", "collectionsCount",
                 "id title handle updatedAt sortOrder"));
-        OBJECT_CONFIGS.put("inventory_items", new ObjectConfig("inventoryItems",
+        OBJECT_CONFIGS.put("inventory_items", new ObjectConfig("inventoryItems", null,
                 "id sku createdAt updatedAt requiresShipping tracked"));
     }
 
@@ -164,23 +164,33 @@ public class ShopifyChunkReader implements ChunkReader {
     public long getApproximateCount(String objectName, String additionalCondition) throws Exception {
         ObjectConfig config = getObjectConfig(objectName);
 
-        String queryFilter = additionalCondition != null && !additionalCondition.isEmpty()
-                ? "(query: \"" + escapeGraphql(additionalCondition) + "\")"
-                : "";
-        String query = "{ " + config.connectionField + queryFilter + " { edges { cursor } pageInfo { hasNextPage } } }";
+        // Use Shopify's dedicated count query (productsCount, ordersCount, etc.)
+        if (config.countQuery != null) {
+            String queryFilter = additionalCondition != null && !additionalCondition.isEmpty()
+                    ? "(query: \"" + escapeGraphql(additionalCondition) + "\")"
+                    : "";
+            String query = "{ " + config.countQuery + queryFilter + " { count precision } }";
 
-        // Use a count query — Shopify exposes count on some connections
-        String countQuery = "{ " + config.connectionField + queryFilter + " { edges { cursor } } }";
+            String requestBody = objectMapper.writeValueAsString(Map.of("query", query));
+            HttpResponse<String> response = authClient.executeGraphql(requestBody);
+            Map<String, Object> result = objectMapper.readValue(response.body(), Map.class);
 
-        // Simpler approach: use the count field if available, otherwise estimate
-        // Most Shopify connections support a count via first:1 with totalCount isn't available
-        // We'll use a rough estimate based on cursor-hopping
-        String firstQuery = "{ " + config.connectionField + "(first: 1" +
-                (additionalCondition != null && !additionalCondition.isEmpty()
-                        ? ", query: \"" + escapeGraphql(additionalCondition) + "\""
-                        : "")
-                + ", sortKey: ID) { edges { node { id } cursor } pageInfo { hasNextPage } } }";
+            Map<String, Object> data = (Map<String, Object>) result.get("data");
+            if (data != null) {
+                Map<String, Object> countResult = (Map<String, Object>) data.get(config.countQuery);
+                if (countResult != null && countResult.get("count") instanceof Number) {
+                    long count = ((Number) countResult.get("count")).longValue();
+                    String precision = (String) countResult.get("precision");
+                    LOG.info("Shopify {} count: {} (precision: {})", objectName, count, precision);
+                    return count;
+                }
+            }
+        }
 
+        // Fallback for objects without a count query (e.g., inventory_items)
+        LOG.info("No count query for {}, estimating from first page", objectName);
+        String firstQuery = "{ " + config.connectionField + "(first: 1, sortKey: ID) { "
+                + "edges { node { id } } pageInfo { hasNextPage } } }";
         String requestBody = objectMapper.writeValueAsString(Map.of("query", firstQuery));
         HttpResponse<String> response = authClient.executeGraphql(requestBody);
         Map<String, Object> result = objectMapper.readValue(response.body(), Map.class);
@@ -199,19 +209,7 @@ public class ShopifyChunkReader implements ChunkReader {
             return edges.size();
         }
 
-        // Estimate: count by paging through with 250/page, counting cursors
-        // For large datasets this is expensive, so use the numeric ID range as estimate
-        String minId = extractNumericId((String) ((Map<String, Object>) edges.get(0).get("node")).get("id"));
-        String maxId = getMaxKey(objectName, additionalCondition);
-
-        if (minId != null && maxId != null) {
-            // Rough estimate based on ID range — not exact but good enough for segment decisions
-            long range = Long.parseLong(maxId) - Long.parseLong(minId);
-            // Shopify IDs are roughly sequential, so range ~ count
-            return Math.max(range, 1);
-        }
-
-        return 1000; // Default estimate if we can't determine
+        return 1000; // Unknown, assume moderate size
     }
 
     @Override
@@ -423,10 +421,12 @@ public class ShopifyChunkReader implements ChunkReader {
      */
     static class ObjectConfig {
         final String connectionField;  // GraphQL connection name (e.g., "orders")
+        final String countQuery;       // Dedicated count query (e.g., "productsCount"), null if unavailable
         final String nodeFields;       // Fields to select on each node
 
-        ObjectConfig(String connectionField, String nodeFields) {
+        ObjectConfig(String connectionField, String countQuery, String nodeFields) {
             this.connectionField = connectionField;
+            this.countQuery = countQuery;
             this.nodeFields = nodeFields;
         }
     }
