@@ -65,13 +65,20 @@ public class ShopifyChunkReader implements ChunkReader {
                                                 int chunkSize, String additionalCondition) throws Exception {
         ObjectConfig config = getObjectConfig(objectName);
         List<Map<String, Object>> allResults = new ArrayList<>();
-        String cursor = afterKey;
+
+        // Build ID-based filter from afterKey/endKey.
+        // The SnapshotCoordinator passes numeric IDs (not opaque cursors),
+        // so we use Shopify's query filter (id:>X) instead of cursor-based after:.
+        String idFilter = buildIdFilter(afterKey, endKey);
+        String combinedCondition = combineConditions(idFilter, additionalCondition);
+
+        String cursor = null; // Use cursor only for internal multi-page reads within a chunk
         int remaining = chunkSize;
 
         while (remaining > 0) {
             int pageSize = Math.min(remaining, SHOPIFY_MAX_PAGE_SIZE);
 
-            String query = buildPageQuery(config, pageSize, cursor, additionalCondition);
+            String query = buildPageQuery(config, pageSize, cursor, combinedCondition);
             String requestBody = objectMapper.writeValueAsString(Map.of("query", query));
 
             LOG.debug("Shopify readChunk: object={}, cursor={}, pageSize={}", objectName, cursor, pageSize);
@@ -103,20 +110,7 @@ public class ShopifyChunkReader implements ChunkReader {
             for (Map<String, Object> edge : edges) {
                 Map<String, Object> node = (Map<String, Object>) edge.get("node");
                 if (node != null) {
-                    Map<String, Object> flattened = flattenNode(node);
-
-                    // Filter by endKey if provided (Id < endKey)
-                    if (endKey != null) {
-                        String nodeId = extractNumericId((String) flattened.get("id"));
-                        String endNumeric = extractNumericId(endKey);
-                        if (nodeId != null && endNumeric != null) {
-                            if (Long.parseLong(nodeId) >= Long.parseLong(endNumeric)) {
-                                return allResults;
-                            }
-                        }
-                    }
-
-                    allResults.add(flattened);
+                    allResults.add(flattenNode(node));
                 }
                 cursor = (String) edge.get("cursor");
             }
@@ -365,6 +359,36 @@ public class ShopifyChunkReader implements ChunkReader {
         }
 
         return result;
+    }
+
+    /**
+     * Build Shopify query filter for ID-based pagination.
+     * The SnapshotCoordinator passes numeric IDs, which we translate to Shopify query syntax.
+     * e.g., afterKey="100", endKey="200" → "id:>100 AND id:<200"
+     */
+    private static String buildIdFilter(String afterKey, String endKey) {
+        List<String> parts = new ArrayList<>();
+        if (afterKey != null && !afterKey.isEmpty()) {
+            parts.add("id:>" + extractNumericId(afterKey));
+        }
+        if (endKey != null && !endKey.isEmpty()) {
+            parts.add("id:<" + extractNumericId(endKey));
+        }
+        return parts.isEmpty() ? null : String.join(" AND ", parts);
+    }
+
+    /**
+     * Combine an ID filter with an additional user-provided condition.
+     */
+    private static String combineConditions(String idFilter, String additionalCondition) {
+        boolean hasId = idFilter != null && !idFilter.isEmpty();
+        boolean hasAdditional = additionalCondition != null && !additionalCondition.isEmpty();
+        if (hasId && hasAdditional) {
+            return idFilter + " AND " + additionalCondition;
+        }
+        if (hasId) return idFilter;
+        if (hasAdditional) return additionalCondition;
+        return null;
     }
 
     /**
