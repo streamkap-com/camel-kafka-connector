@@ -28,25 +28,39 @@ public class ShopifyChunkReader implements ChunkReader {
     private final ShopifyAuthClient authClient;
     private final ObjectMapper objectMapper;
 
-    // Map object names to GraphQL connection fields, node fields, and count queries
+    // Map object names to GraphQL connection fields, node fields, and count queries.
+    // Fields are selected to match Shopify webhook payload structure as closely as possible.
     private static final Map<String, ObjectConfig> OBJECT_CONFIGS = new LinkedHashMap<>();
     static {
         OBJECT_CONFIGS.put("orders", new ObjectConfig("orders", "ordersCount",
                 "id name email createdAt updatedAt totalPriceSet { shopMoney { amount currencyCode } } "
                 + "displayFinancialStatus displayFulfillmentStatus cancelledAt closedAt "
                 + "customer { id email } "
-                + "lineItems(first: 50) { edges { node { id title quantity sku "
-                + "originalUnitPriceSet { shopMoney { amount currencyCode } } } } }"));
+                + "lineItems(first: 50) { edges { node { "
+                + "id title quantity sku taxable "
+                + "originalUnitPriceSet { shopMoney { amount currencyCode } } "
+                + "product { id } "
+                + "variant { id } "
+                + "} } }"));
         OBJECT_CONFIGS.put("products", new ObjectConfig("products", "productsCount",
                 "id title handle status vendor productType createdAt updatedAt "
-                + "variants(first: 50) { edges { node { id title sku price inventoryQuantity } } } "
-                + "images(first: 10) { edges { node { id url altText } } }"));
+                + "variants(first: 50) { edges { node { "
+                + "id title sku price compareAtPrice barcode taxable "
+                + "position inventoryPolicy createdAt updatedAt "
+                + "inventoryQuantity "
+                + "inventoryItem { id } "
+                + "image { id } "
+                + "product { id } "
+                + "selectedOptions { name value } "
+                + "} } } "
+                + "images(first: 10) { edges { node { id url altText width height createdAt } } }"));
         OBJECT_CONFIGS.put("customers", new ObjectConfig("customers", "customersCount",
                 "id firstName lastName email phone createdAt updatedAt state numberOfOrders "
-                + "addresses(first: 10) { address1 address2 city province country zip }"));
+                + "taxExempt verifiedEmail "
+                + "addresses(first: 10) { address1 address2 city province country zip phone company }"));
         OBJECT_CONFIGS.put("draft_orders", new ObjectConfig("draftOrders", "draftOrdersCount",
                 "id name status createdAt updatedAt "
-                + "lineItems(first: 50) { edges { node { id title quantity "
+                + "lineItems(first: 50) { edges { node { id title quantity sku taxable "
                 + "originalUnitPriceSet { shopMoney { amount currencyCode } } } } }"));
         OBJECT_CONFIGS.put("collections", new ObjectConfig("collections", "collectionsCount",
                 "id title handle updatedAt sortOrder"));
@@ -307,9 +321,12 @@ public class ShopifyChunkReader implements ChunkReader {
     }
 
     /**
-     * Flatten a GraphQL node into a simple key-value map.
-     * Converts nested connections (edges/node) into lists of maps.
-     * Converts Shopify GID (gid://shopify/Order/12345) to numeric ID.
+     * Flatten a GraphQL node into a simple key-value map matching webhook format.
+     * - Converts GIDs to numeric Long IDs
+     * - Converts camelCase keys to snake_case (to match Shopify REST/webhook format)
+     * - Flattens nested connections (edges/node) into lists
+     * - Flattens nested single objects (customer, product) into {parent}_{field}
+     * - Converts selectedOptions into option1/option2/option3
      */
     @SuppressWarnings("unchecked")
     private Map<String, Object> flattenNode(Map<String, Object> node) {
@@ -320,12 +337,16 @@ public class ShopifyChunkReader implements ChunkReader {
             Object value = entry.getValue();
 
             if ("id".equals(key) && value instanceof String) {
-                // Convert GID to numeric: gid://shopify/Order/12345 → 12345
-                result.put(key, extractNumericId((String) value));
+                result.put("id", gidToLong((String) value));
+            } else if ("selectedOptions".equals(key) && value instanceof List) {
+                // Convert selectedOptions [{name, value}] to option1, option2, option3
+                List<Map<String, Object>> options = (List<Map<String, Object>>) value;
+                for (int i = 0; i < options.size() && i < 3; i++) {
+                    result.put("option" + (i + 1), options.get(i).get("value"));
+                }
             } else if (value instanceof Map) {
                 Map<String, Object> nested = (Map<String, Object>) value;
                 if (nested.containsKey("edges")) {
-                    // This is a connection — flatten to list of node maps
                     List<Map<String, Object>> items = new ArrayList<>();
                     List<Map<String, Object>> edges = (List<Map<String, Object>>) nested.get("edges");
                     if (edges != null) {
@@ -336,27 +357,61 @@ public class ShopifyChunkReader implements ChunkReader {
                             }
                         }
                     }
-                    result.put(key, items);
+                    result.put(camelToSnake(key), items);
                 } else if (nested.containsKey("shopMoney")) {
-                    // Money field — flatten to amount + currency
                     Map<String, Object> money = (Map<String, Object>) nested.get("shopMoney");
-                    result.put(key, money.get("amount"));
-                    result.put(key + "Currency", money.get("currencyCode"));
+                    result.put(camelToSnake(key), money.get("amount"));
+                    result.put(camelToSnake(key) + "_currency", money.get("currencyCode"));
                 } else if (nested.containsKey("id")) {
-                    // Nested single object (like customer) — flatten with prefix
-                    Map<String, Object> flat = flattenNode(nested);
-                    for (Map.Entry<String, Object> nestedEntry : flat.entrySet()) {
-                        result.put(key + "_" + nestedEntry.getKey(), nestedEntry.getValue());
-                    }
+                    // Nested single object (customer, product, inventoryItem, image, variant)
+                    // Flatten to {parent}_id matching webhook format
+                    String snakeKey = camelToSnake(key);
+                    result.put(snakeKey + "_id", gidToLong((String) nested.get("id")));
                 } else {
-                    result.put(key, nested);
+                    result.put(camelToSnake(key), nested);
                 }
             } else {
-                result.put(key, value);
+                result.put(camelToSnake(key), value);
             }
         }
 
         return result;
+    }
+
+    /**
+     * Convert camelCase to snake_case to match Shopify webhook/REST format.
+     * e.g., "inventoryQuantity" → "inventory_quantity", "createdAt" → "created_at"
+     */
+    static String camelToSnake(String camelCase) {
+        if (camelCase == null || camelCase.isEmpty()) return camelCase;
+        StringBuilder result = new StringBuilder();
+        for (int i = 0; i < camelCase.length(); i++) {
+            char c = camelCase.charAt(i);
+            if (Character.isUpperCase(c)) {
+                if (i > 0) result.append('_');
+                result.append(Character.toLowerCase(c));
+            } else {
+                result.append(c);
+            }
+        }
+        return result.toString();
+    }
+
+    /**
+     * Convert Shopify GID to numeric Long.
+     * "gid://shopify/Order/12345" → 12345L
+     * Returns the string as-is if not parseable.
+     */
+    private static Object gidToLong(String gid) {
+        String numeric = extractNumericId(gid);
+        if (numeric != null) {
+            try {
+                return Long.parseLong(numeric);
+            } catch (NumberFormatException e) {
+                return numeric;
+            }
+        }
+        return gid;
     }
 
     /**
