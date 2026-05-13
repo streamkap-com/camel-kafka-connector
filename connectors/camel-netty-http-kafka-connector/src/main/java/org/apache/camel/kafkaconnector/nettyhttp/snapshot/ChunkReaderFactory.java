@@ -4,6 +4,8 @@ import java.util.Map;
 
 import org.apache.camel.kafkaconnector.nettyhttp.snapshot.salesforce.SalesforceAuthClient;
 import org.apache.camel.kafkaconnector.nettyhttp.snapshot.salesforce.SalesforceChunkReader;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.shopify.ShopifyAuthClient;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.shopify.ShopifyChunkReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +32,8 @@ public class ChunkReaderFactory {
         switch (providerType.toLowerCase()) {
             case "salesforce":
                 return createSalesforceReader(config);
+            case "shopify":
+                return createShopifyReader(config);
             case "zendesk":
                 // Zendesk chunk reader not yet implemented
                 LOG.warn("Zendesk snapshot ChunkReader not yet implemented. Signal-triggered snapshots will not work.");
@@ -55,5 +59,29 @@ public class ChunkReaderFactory {
         SalesforceAuthClient authClient = new SalesforceAuthClient(
                 instanceUrl, clientId, clientSecret, username, password);
         return new SalesforceChunkReader(authClient);
+    }
+
+    private static ChunkReader createShopifyReader(Map<String, String> config) {
+        String storeUrl = config.getOrDefault("camel.source.snapshot.shopify.store.url", "");
+        String accessToken = config.getOrDefault("camel.source.snapshot.shopify.access.token", "");
+        String clientId = config.getOrDefault("camel.source.snapshot.shopify.client.id", "");
+        String clientSecret = config.getOrDefault("camel.source.snapshot.shopify.client.secret", "");
+        String apiVersion = config.getOrDefault("camel.source.snapshot.shopify.api.version", "2024-10");
+
+        if (storeUrl.isEmpty()) {
+            LOG.warn("Shopify snapshot store URL not configured. Snapshot will not work.");
+            return null;
+        }
+
+        boolean hasStaticToken = !accessToken.isEmpty();
+        boolean hasClientCredentials = !clientId.isEmpty() && !clientSecret.isEmpty();
+
+        if (!hasStaticToken && !hasClientCredentials) {
+            LOG.warn("Shopify snapshot credentials not configured. Provide either access.token (legacy) or client.id + client.secret (Dev Dashboard). Snapshot will not work.");
+            return null;
+        }
+
+        ShopifyAuthClient authClient = new ShopifyAuthClient(storeUrl, accessToken, apiVersion, clientId, clientSecret);
+        return new ShopifyChunkReader(authClient);
     }
 }

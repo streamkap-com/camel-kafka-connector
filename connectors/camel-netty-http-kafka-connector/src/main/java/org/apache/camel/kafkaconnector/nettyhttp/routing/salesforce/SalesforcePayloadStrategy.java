@@ -119,7 +119,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
         String idField = flattenDetail ? flattenDetailPrefix + "Id" : "Id";
         Map<String, Object> key = recordId != null ? keyOf(idField, recordId) : Collections.emptyMap();
 
-        return Collections.singletonList(createRecord(topicSuffix, outputPayload, eventType, key));
+        return Collections.singletonList(createRecord(topicSuffix, outputPayload, eventType, key, changeTypeToOp(changeType)));
     }
 
     private List<RoutedRecord> routeGapEvent(Map<String, Object> payload,
@@ -143,7 +143,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
 
         Map<String, Object> key = recordId != null ? keyOf("Id", recordId) : Collections.emptyMap();
 
-        return Collections.singletonList(createRecord("gap", outputPayload, eventType, key));
+        return Collections.singletonList(createRecord("gap", outputPayload, eventType, key, changeTypeToOp(changeType)));
     }
 
     @SuppressWarnings("unchecked")
@@ -278,7 +278,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
         String idField = flattenDetail ? flattenDetailPrefix + "Id" : "Id";
         Map<String, Object> key = recordId != null ? keyOf(idField, recordId) : Collections.emptyMap();
 
-        return Collections.singletonList(createRecord(topicSuffix, outputPayload, eventType, key));
+        return Collections.singletonList(createRecord(topicSuffix, outputPayload, eventType, key, changeTypeToOp(operationType.toUpperCase())));
     }
 
     private String parsePushTopicChannel(String channel) {
@@ -332,7 +332,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
         String idField = flattenDetail ? flattenDetailPrefix + "Id" : "Id";
         Map<String, Object> key = recordId != null ? keyOf(idField, recordId) : Collections.emptyMap();
 
-        return Collections.singletonList(createRecord(topicSuffix, outputPayload, eventType, key));
+        return Collections.singletonList(createRecord(topicSuffix, outputPayload, eventType, key, "c"));
     }
 
     private String parsePlatformEventChannel(String channel) {
@@ -345,6 +345,23 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
             return channel.substring(lastSlash + 1);
         }
         return channel;
+    }
+
+    // --- Op Mapping ---
+
+    private static String changeTypeToOp(String changeType) {
+        if (changeType == null) return "u";
+        switch (changeType) {
+            case "CREATE":
+            case "CREATED":
+                return "c";
+            case "DELETE":
+            case "DELETED":
+            case "GAP_DELETE":
+                return "d";
+            default:
+                return "u";
+        }
     }
 
     // --- Delete Detection ---
@@ -384,6 +401,11 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
 
     private RoutedRecord createRecord(String topicSuffix, Map<String, Object> data, String eventType,
                                       Map<String, Object> keyFields) {
+        return createRecord(topicSuffix, data, eventType, keyFields, null);
+    }
+
+    private RoutedRecord createRecord(String topicSuffix, Map<String, Object> data, String eventType,
+                                      Map<String, Object> keyFields, String op) {
         String fullTopic = topicPrefix + topicSuffix;
         String json;
         try {
@@ -391,7 +413,7 @@ public class SalesforcePayloadStrategy implements PayloadRoutingStrategy {
         } catch (JsonProcessingException e) {
             throw new PayloadRoutingException("Failed to serialize record payload to JSON", e);
         }
-        return new RoutedRecord(fullTopic, json, eventType, keyFields);
+        return new RoutedRecord(fullTopic, json, eventType, keyFields, op);
     }
 
     @SuppressWarnings("unchecked")

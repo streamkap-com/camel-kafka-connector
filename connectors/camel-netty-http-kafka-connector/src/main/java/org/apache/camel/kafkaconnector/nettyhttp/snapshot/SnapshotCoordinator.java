@@ -295,6 +295,7 @@ public class SnapshotCoordinator {
     private void runSegmentSnapshot(SnapshotContext context, int chunkSize) {
         SnapshotSegment segment = context.getSegment();
         String segmentId = segment.getSegmentId();
+        long totalRecordsEmitted = 0;
 
         try {
             context.start();
@@ -361,11 +362,13 @@ public class SnapshotCoordinator {
                     outputQueue.put(snapshotRecord);
                 }
 
+                totalRecordsEmitted += remaining.size();
+
                 // Advance position
                 context.advanceChunk(lastKeyInChunk);
 
-                LOG.debug("Snapshot {} chunk {} done, {} records emitted, last key: {}",
-                        segmentId, context.getChunkNumber(), remaining.size(), lastKeyInChunk);
+                LOG.info("Snapshot {} chunk {} done: {} records emitted (total so far: {}), last key: {}",
+                        segmentId, context.getChunkNumber(), remaining.size(), totalRecordsEmitted, lastKeyInChunk);
 
                 // Delay between chunks
                 if (chunkDelayMs > 0) {
@@ -390,7 +393,8 @@ public class SnapshotCoordinator {
                 }
             }
 
-            LOG.info("Snapshot segment finished: {} status: {}", segmentId, context.getStatus());
+            LOG.info("Snapshot segment finished: {} status: {}, total records emitted: {}",
+                    segmentId, context.getStatus(), totalRecordsEmitted);
         }
     }
 }

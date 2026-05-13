@@ -2,7 +2,7 @@
 
 ## Overview
 
-This connector receives webhook HTTP POST events from external applications (Zendesk, Salesforce, etc.) and routes them to Kafka topics. It provides:
+This connector receives webhook HTTP POST events from external applications (Zendesk, Salesforce, Shopify, etc.) and routes them to Kafka topics. It provides:
 
 - **Payload routing** — Automatic topic routing based on event type/domain
 - **Fan-out** — Split nested arrays (tags, custom fields) into separate topics
@@ -19,15 +19,16 @@ This connector receives webhook HTTP POST events from external applications (Zen
 1. [Payload Routing](#1-payload-routing)
 2. [Zendesk Configuration](#2-zendesk-configuration)
 3. [Salesforce Configuration](#3-salesforce-configuration)
-4. [Fan-out Configuration](#4-fan-out-configuration)
-5. [Detail Flattening](#5-detail-flattening)
-6. [Event Field Control](#6-event-field-control)
-7. [Message Keys](#7-message-keys)
-8. [Delete Detection](#8-delete-detection)
-9. [Source Dead Letter Queue](#9-source-dead-letter-queue)
-10. [Snapshot](#10-snapshot)
-11. [Full Configuration Reference](#11-full-configuration-reference)
-12. [Example Configurations](#12-example-configurations)
+4. [Shopify Configuration](#4-shopify-configuration)
+5. [Fan-out Configuration](#5-fan-out-configuration)
+6. [Detail Flattening](#6-detail-flattening)
+7. [Event Field Control](#7-event-field-control)
+8. [Message Keys](#8-message-keys)
+9. [Delete Detection](#9-delete-detection)
+10. [Source Dead Letter Queue](#10-source-dead-letter-queue)
+11. [Snapshot](#11-snapshot)
+12. [Full Configuration Reference](#12-full-configuration-reference)
+13. [Example Configurations](#13-example-configurations)
 
 ---
 
@@ -40,7 +41,7 @@ The connector inspects incoming JSON payloads to determine the target Kafka topi
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `camel.source.payload.router.enabled` | Boolean | `false` | Enable payload-based routing |
-| `camel.source.payload.router.type` | String | — | Provider type: `zendesk`, `salesforce` |
+| `camel.source.payload.router.type` | String | — | Provider type: `zendesk`, `salesforce`, `shopify` |
 | `camel.source.payload.router.topic.prefix` | String | `""` | Prefix for all generated topic names |
 | `camel.source.payload.router.unknown.type.behavior` | String | `DEFAULT_TOPIC` | How to handle unrecognized events: `DEFAULT_TOPIC`, `SKIP`, `FAIL` |
 | `camel.source.payload.router.unknown.type.default.topic` | String | `unknown` | Topic for unknown events (when behavior = DEFAULT_TOPIC) |
@@ -49,512 +50,61 @@ The connector inspects incoming JSON payloads to determine the target Kafka topi
 
 ## 2. Zendesk Configuration
 
-Supported when `camel.source.payload.router.type=zendesk`.
+Supported when `camel.source.payload.router.type=zendesk`. Routes events by domain (tickets, users, organizations, etc.) based on the `type` field in the JSON body.
 
-### Event Domains and Topics
+| Zendesk Domain | Generated Topic | Key |
+|---|---|---|
+| Tickets | `{prefix}ticket_events` | `{detail_id}` |
+| Users | `{prefix}user_events` | `{detail_id}` |
+| Organizations | `{prefix}organization_events` | `{detail_id}` |
+| Articles | `{prefix}article_events` | `{detail_id}` |
+| Agents | `{prefix}agent_events` | `{detail_agent_id}` |
 
-| Zendesk Domain | Example Event Type | Generated Topic |
-|---------------|-------------------|-----------------|
-| Tickets | `zen:event-type:ticket.created` | `{prefix}ticket_events` |
-| Users | `zen:event-type:user.updated` | `{prefix}user_events` |
-| Organizations | `zen:event-type:organization.deleted` | `{prefix}organization_events` |
-| Articles | `zen:event-type:article.published` | `{prefix}article_events` |
-| Community Posts | `zen:event-type:community_post.created` | `{prefix}community_post_events` |
-| Messaging | `zen:event-type:messaging_ticket.message_added` | `{prefix}messaging_events` |
-| Agent Availability | `zen:event-type:agent.status_changed` | `{prefix}agent_events` |
-| Omnichannel Config | `zen:event-type:omnichannel_config.feature_toggled` | `{prefix}omnichannel_config_events` |
-| Messaging Metrics | `zen:event-type:messaging_live_metrics.wait_time_changed` | `{prefix}messaging_metrics_events` |
+Fan-out: `ticket.tags`, `ticket.custom_fields`, `ticket.comments`, `ticket.collaborators`, `ticket.followers`, `organization.tags`
 
-### Zendesk Payload Structure
-
-```json
-{
-  "type": "zen:event-type:ticket.created",
-  "id": "event-uuid-123",
-  "account_id": 123456,
-  "time": "2025-01-24T15:30:00Z",
-  "subject": "zen:ticket:987654",
-  "detail": {
-    "id": 987654,
-    "subject": "Cannot login",
-    "status": "new",
-    "tags": ["urgent", "billing"],
-    "custom_fields": [{"id": 123, "value": "tier1"}]
-  },
-  "event": {
-    "comment": {"id": 555, "body": "We are looking into it"}
-  }
-}
-```
-
-### Zendesk Message Keys
-
-| Record Type | Key Schema |
-|-------------|-----------|
-| Main events (ticket, user, org, etc.) | `{detail_id: <detail.id>}` |
-| Agent events | `{detail_agent_id: <detail.agent_id>}` |
-| Account-level events | `{account_id: <account_id>}` |
-| Fan-out: tags | `{detail_id: <parent_id>, value: <tag>}` |
-| Fan-out: custom_fields | `{detail_id: <parent_id>, id: <field_id>}` |
-| Fan-out: comments | `{id: <comment_id>}` |
-| Fan-out: collaborators/followers | `{detail_id: <parent_id>, id: <entity_id>}` |
-
-All key fields are also present in the value with the same name, enabling sink connectors to read from either key or value.
+**Full documentation**: [docs/ZENDESK.md](docs/ZENDESK.md)
 
 ---
 
 ## 3. Salesforce Configuration
 
-Supported when `camel.source.payload.router.type=salesforce`.
+Supported when `camel.source.payload.router.type=salesforce`. Supports CDC, PushTopic, and Platform Event formats. Includes native CDC subscription and Debezium-style snapshots.
 
-### Supported Event Formats
+| Event Format | Detection | Topic Pattern | Key |
+|---|---|---|---|
+| CDC | `data.payload.ChangeEventHeader` | `{prefix}{entity}` | `{Id}` |
+| PushTopic | `data.sobject` | `{prefix}{topicname}` | `{Id}` |
+| Platform Event | `data.payload` (no header) | `{prefix}{eventname}` | `{Id}` |
 
-#### Change Data Capture (CDC)
+Includes webhook setup guide (Apex triggers, Named Credentials), native CDC subscription, and snapshot configuration.
 
-Detected by presence of `data.payload.ChangeEventHeader`.
-
-| changeType | Topic | `__deleted` |
-|-----------|-------|------------|
-| `CREATE` | `{prefix}{entity}_events` | `false` |
-| `UPDATE` | `{prefix}{entity}_events` | `false` |
-| `DELETE` | `{prefix}{entity}_events` | `true` |
-| `UNDELETE` | `{prefix}{entity}_events` | `false` |
-| `GAP_CREATE` | `{prefix}gap_events` | `false` |
-| `GAP_DELETE` | `{prefix}gap_events` | `true` |
-| `GAP_OVERFLOW` | `{prefix}gap_events` | `false` |
-
-#### PushTopic Events
-
-Detected by presence of `data.sobject`.
-
-| event.type | Topic |
-|-----------|-------|
-| `created` | `{prefix}{topicname}_events` |
-| `updated` | `{prefix}{topicname}_events` |
-| `deleted` | `{prefix}{topicname}_events` |
-| `undeleted` | `{prefix}{topicname}_events` |
-
-#### Platform Events
-
-Detected by presence of `data.payload` without `ChangeEventHeader`.
-
-| | Topic |
-|---|-------|
-| All | `{prefix}{eventname}_events` |
-
-Platform events always have `__deleted = false`.
-
-### Salesforce Message Keys
-
-All Salesforce events use `{Id: <record_id>}` as key (or `{<prefix>Id: <record_id>}` when flattened with a prefix).
-
-### Setting Up Salesforce to Send Events to the Connector
-
-
-### Setting Up Salesforce to Send Events to the Connector
-
-This guide walks through setting up Apex triggers to automatically send all record changes (create, update, delete, undelete) to the connector with **all fields included dynamically**.
-
-#### Prerequisites
-
-You need:
-- A Salesforce org (Developer, Professional, Enterprise, or Unlimited edition)
-- Admin access (System Administrator profile)
-- Your connector's public URL (e.g., `https://your-connector.example.com`)
-
-#### Step 1: Create an External Client App (for Authentication)
-
-This provides OAuth credentials for the Apex callout and snapshot API.
-
-1. **Setup** > Quick Find > search **"App Manager"**
-2. Click **New External Client App** (or **New Connected App** on older orgs)
-3. Fill in:
-   - **Name**: `Kafka Connector`
-   - **Contact Email**: your email
-   - **Distribution State**: `Local`
-4. Under **Enable OAuth**:
-   - Check **Enable OAuth Settings**
-   - **Callback URL**: `https://login.salesforce.com/services/oauth2/callback`
-   - **Selected OAuth Scopes**: add `Manage user data via APIs (api)`, `Full access (full)`, `Perform requests at any time (refresh_token, offline_access)`
-5. Under **Security**: uncheck `Require Proof Key for Code Exchange (PKCE)`
-6. Click **Create** / **Save**
-7. After saving, note the **Consumer Key** and **Consumer Secret** (you may need to click "Manage Consumer Details" to reveal the secret)
-
-Note: New apps may take 2-10 minutes to activate.
-
-#### Step 2: Create Named Credential (for Secure HTTP Callouts)
-
-Named Credentials store your connector's URL and authentication headers securely.
-
-**Create External Credential:**
-
-1. **Setup** > Quick Find > search **"Named Credentials"**
-2. Click **External Credentials** tab > **New**
-3. Fill in:
-   - **Label**: `Kafka Connector Webhook`
-   - **Name**: `Kafka_Connector_Webhook`
-   - **Authentication Protocol**: `Custom`
-4. Save
-5. Under **Principals** section > click **New**:
-   - **Parameter Name**: `Default`
-   - **Identity Type**: `Named Principal` (read-only)
-   - **Sequence Number**: `1`
-6. Save
-7. Click on the **Default** principal > under **Authentication Parameters** > **Add**:
-   - **Parameter 1 Name**: `x-api-key`
-   - **Parameter 1 Value**: your connector's API key
-8. Save
-
-**Create Named Credential:**
-
-1. Click **Named Credentials** tab > **New**
-2. Fill in:
-   - **Label**: `Kafka Connector`
-   - **Name**: `Kafka_Connector`
-   - **URL**: `https://your-connector.example.com` (your connector's public URL, no path)
-   - **External Credential**: select `Kafka Connector Webhook`
-3. Save
-
-**Grant Permission to Use the Credential:**
-
-1. **Setup** > Quick Find > search **"Permission Sets"** > **New**
-   - **Label**: `Kafka Webhook Access`
-   - Save
-2. Inside the permission set, click **External Credential Principal Access**
-3. Click **Edit** > move `Kafka_Connector_Webhook - Default` to **Enabled** > Save
-4. Click **Manage Assignments** > **Add Assignment** > select your user > **Assign**
-5. Log out and log back in to refresh the session
-
-#### Step 3: Create the Webhook Sender Apex Class
-
-This class dynamically queries **all fields** (standard + custom) for any object and sends them to the connector in CDC format.
-
-1. **Setup** > Quick Find > search **"Apex Classes"** > **New**
-2. Paste this code:
-
-```apex
-public class WebhookSender {
-
-    @future(callout=true)
-    public static void sendAsync(String recordId, String changeType, String objectName) {
-        Map<String, Schema.SObjectField> fieldMap = Schema.getGlobalDescribe()
-            .get(objectName).getDescribe().fields.getMap();
-
-        List<String> fieldNames = new List<String>();
-        for (String fieldName : fieldMap.keySet()) {
-            Schema.DescribeFieldResult fieldDesc = fieldMap.get(fieldName).getDescribe();
-            if (fieldDesc.isAccessible()) {
-                fieldNames.add(fieldDesc.getName());
-            }
-        }
-
-        String soql = 'SELECT ' + String.join(fieldNames, ', ')
-                     + ' FROM ' + objectName
-                     + ' WHERE Id = \'' + String.escapeSingleQuotes(recordId) + '\'';
-
-        List<SObject> records = Database.query(soql);
-        if (records.isEmpty()) {
-            sendPayload(recordId, objectName, changeType, new Map<String, Object>{'Id' => recordId});
-            return;
-        }
-
-        Map<String, Object> recordMap = new Map<String, Object>();
-        SObject record = records[0];
-        for (String fieldName : fieldNames) {
-            recordMap.put(fieldName, record.get(fieldName));
-        }
-
-        sendPayload(recordId, objectName, changeType, recordMap);
-    }
-
-    @future(callout=true)
-    public static void sendDeleteAsync(String recordId, String objectName, String recordJson) {
-        Map<String, Object> recordMap = (Map<String, Object>) JSON.deserializeUntyped(recordJson);
-        sendPayload(recordId, objectName, 'DELETE', recordMap);
-    }
-
-    private static void sendPayload(String recordId, String objectName,
-                                     String changeType, Map<String, Object> recordFields) {
-        Map<String, Object> header = new Map<String, Object>{
-            'entityName' => objectName,
-            'recordIds' => new List<String>{recordId},
-            'changeType' => changeType,
-            'commitTimestamp' => System.currentTimeMillis()
-        };
-
-        Map<String, Object> payload = new Map<String, Object>();
-        payload.put('ChangeEventHeader', header);
-        payload.putAll(recordFields);
-
-        Map<String, Object> body = new Map<String, Object>{
-            'data' => new Map<String, Object>{
-                'payload' => payload,
-                'event' => new Map<String, Object>{'replayId' => 0}
-            },
-            'channel' => '/data/' + objectName + 'ChangeEvent'
-        };
-
-        HttpRequest req = new HttpRequest();
-        req.setEndpoint('callout:Kafka_Connector');
-        req.setMethod('POST');
-        req.setHeader('Content-Type', 'application/json');
-        req.setBody(JSON.serialize(body));
-        req.setTimeout(30000);
-
-        Http http = new Http();
-        try {
-            HttpResponse res = http.send(req);
-            if (res.getStatusCode() != 200) {
-                System.debug(LoggingLevel.ERROR, 'Webhook failed: ' + res.getStatusCode() + ' ' + res.getBody());
-            }
-        } catch (Exception e) {
-            System.debug(LoggingLevel.ERROR, 'Webhook error: ' + e.getMessage());
-        }
-    }
-}
-```
-
-3. Click **Save**
-
-**What this class does:**
-- `sendAsync()` — Dynamically discovers ALL fields (standard + custom) for the object, queries the full record, and sends it as a CDC-formatted HTTP POST
-- `sendDeleteAsync()` — Sends delete events using the record data from `Trigger.old` (since deleted records can't be re-queried)
-- `sendPayload()` — Builds the CDC payload format and sends via the Named Credential (includes `x-api-key` header automatically)
-- Uses `callout:Kafka_Connector` — references the Named Credential by API name, no hardcoded URLs or credentials
-
-**Do not modify the payload structure.** The connector's Salesforce strategy relies on these exact field names to detect and route events:
-
-| Field Path | Required Value | Purpose |
-|-----------|---------------|---------|
-| `data` | Object wrapper | Top-level container |
-| `data.payload` | Object with record fields | Record data + header |
-| `data.payload.ChangeEventHeader` | Object with metadata | Identifies event as Salesforce CDC |
-| `data.payload.ChangeEventHeader.entityName` | Object name (e.g., `"Account"`) | Determines Kafka topic |
-| `data.payload.ChangeEventHeader.changeType` | `CREATE`, `UPDATE`, `DELETE`, `UNDELETE` | Sets `__deleted` field |
-| `data.payload.Id` | Record ID | Used as message key |
-| `data.event.replayId` | Integer | Included in output for tracking |
-| `channel` | `/data/{Object}ChangeEvent` | Used for event format detection |
-
-Renaming any of these fields (e.g., `payload` to `body`, or `ChangeEventHeader` to `header`) will cause the connector to not recognize the event and route it to the unknown/default topic.
-
-#### Step 4: Create Apex Triggers per Object
-
-Create one trigger per Salesforce object you want to capture. The trigger calls the generic `WebhookSender` class.
-
-**For Account:**
-
-1. **Setup** > Quick Find > search **"Object Manager"**
-2. Click **Account** > **Triggers** (left sidebar) > **New**
-3. Paste:
-
-```apex
-trigger AccountToKafka on Account (after insert, after update, after delete, after undelete) {
-    List<SObject> records;
-    String changeType;
-
-    if (Trigger.isInsert) {
-        changeType = 'CREATE';
-        records = Trigger.new;
-    } else if (Trigger.isUpdate) {
-        changeType = 'UPDATE';
-        records = Trigger.new;
-    } else if (Trigger.isDelete) {
-        changeType = 'DELETE';
-        records = Trigger.old;
-    } else if (Trigger.isUndelete) {
-        changeType = 'UNDELETE';
-        records = Trigger.new;
-    }
-
-    for (SObject rec : records) {
-        if (changeType == 'DELETE') {
-            WebhookSender.sendDeleteAsync(rec.Id, 'Account', JSON.serialize(rec));
-        } else {
-            WebhookSender.sendAsync(rec.Id, changeType, 'Account');
-        }
-    }
-}
-```
-
-4. Click **Save**
-
-**For Contact:**
-
-1. **Object Manager** > **Contact** > **Triggers** > **New**
-2. Paste (same pattern, just change the object name):
-
-```apex
-trigger ContactToKafka on Contact (after insert, after update, after delete, after undelete) {
-    List<SObject> records;
-    String changeType;
-
-    if (Trigger.isInsert) {
-        changeType = 'CREATE';
-        records = Trigger.new;
-    } else if (Trigger.isUpdate) {
-        changeType = 'UPDATE';
-        records = Trigger.new;
-    } else if (Trigger.isDelete) {
-        changeType = 'DELETE';
-        records = Trigger.old;
-    } else if (Trigger.isUndelete) {
-        changeType = 'UNDELETE';
-        records = Trigger.new;
-    }
-
-    for (SObject rec : records) {
-        if (changeType == 'DELETE') {
-            WebhookSender.sendDeleteAsync(rec.Id, 'Contact', JSON.serialize(rec));
-        } else {
-            WebhookSender.sendAsync(rec.Id, changeType, 'Contact');
-        }
-    }
-}
-```
-
-3. Click **Save**
-
-**To add more objects** (Lead, Opportunity, Case, etc.), create a new trigger with the same pattern — only change the trigger name, object name in the `trigger ... on {Object}` line, and the `'Object'` string in the `WebhookSender` calls.
-
-#### Step 5: Configure the Connector
-
-```properties
-# Core connector settings
-camel.source.path.protocol=http
-camel.source.path.host=0.0.0.0
-camel.source.path.port=8080
-camel.source.endpoint.sync=true
-
-# Payload routing for Salesforce
-camel.source.payload.router.enabled=true
-camel.source.payload.router.type=salesforce
-camel.source.payload.router.topic.prefix=sf_
-
-# Flatten for upsert-friendly output
-camel.source.payload.router.flatten.detail=true
-camel.source.payload.router.flatten.detail.prefix=detail_
-camel.source.payload.router.include.event=false
-
-# Error handling
-camel.source.dlq.enabled=true
-camel.source.dlq.topic=sf_dlq
-errors.tolerance=all
-errors.log.enable=true
-
-# Snapshot (optional, for initial data load)
-camel.source.snapshot.mode=no_data
-camel.source.snapshot.signal.topic=sf_snapshot_signals
-camel.source.snapshot.salesforce.instance.url=https://myorg.my.salesforce.com
-camel.source.snapshot.salesforce.auth.client.id=your_consumer_key
-camel.source.snapshot.salesforce.auth.client.secret=your_consumer_secret
-camel.source.snapshot.salesforce.auth.username=your_username
-camel.source.snapshot.salesforce.auth.password=your_password_with_security_token
-```
-
-#### Important: URL Path and Topic Routing
-
-The Apex callout endpoint must have **no URL path** — just the base URL via the Named Credential:
-
-```apex
-// Correct — no path, payload router determines topic from payload content
-req.setEndpoint('callout:Kafka_Connector');
-
-// Wrong — /webhook path conflicts with CamelDynamicTopicTransform
-req.setEndpoint('callout:Kafka_Connector/webhook');
-```
-
-If your connector config includes `CamelDynamicTopicTransform` (which sets topic from the HTTP path), a path like `/webhook` overrides the payload router's topic. With no path, the payload router's topic (e.g., `sf_account_events`) is preserved through the transform chain.
-
-#### Step 6: Test End-to-End
-
-1. **Create an Account** in Salesforce:
-   - Click **Accounts** tab > **New**
-   - Enter Account Name: `Test Company`
-   - Fill in other fields (Phone, Billing City, etc.)
-   - Click **Save**
-
-2. **Check Kafka** (within a few seconds):
-   ```bash
-   kafka-console-consumer --bootstrap-server localhost:9092 --topic sf_account_events --from-beginning
-   ```
-   You should see a record with all Account fields, `changeType: CREATE`, and `__deleted: false`.
-
-3. **Update the Account**:
-   - Open the Account > edit the Name > Save
-   - Check Kafka — should see `changeType: UPDATE` with all current field values
-
-4. **Delete the Account**:
-   - Open the Account > Delete
-   - Check Kafka — should see `changeType: DELETE` and `__deleted: true`
-
-#### Troubleshooting
-
-| Issue | Check |
-|-------|-------|
-| No events in Kafka | Setup > Quick Find > "Apex Jobs" — check for failed `@future` jobs |
-| "Unauthorized endpoint" error | Verify Named Credential URL is correct and External Credential Principal Access is granted via Permission Set |
-| "Insufficient access" on trigger | Verify your profile has "Modify All Data" and the trigger is active |
-| Events in wrong topic | Verify `req.setEndpoint` has no URL path (just `callout:Kafka_Connector`) |
-| Missing fields in payload | Check field-level security — the user must have read access to all fields |
-| Trigger not firing | Object Manager > your object > Triggers — verify status is "Active" |
-
-#### Limitations
-
-- **`@future` method limit**: 50 per transaction. Bulk operations (e.g., Data Loader importing 50+ records) may hit this limit.
-- **Callout timeout**: 120 seconds max per callout.
-- **One trigger per object**: You need to create a trigger for each Salesforce object you want to capture.
-- **No replay**: If the connector is down when Salesforce sends the event, it's lost. Use the snapshot feature to backfill missed data.
-- **Field discovery**: The `WebhookSender` dynamically discovers all fields at runtime, including custom fields added later. No code changes needed when fields change.
-
----### Important: URL Path and Topic Routing
-
-When using the payload router (`camel.source.payload.router.enabled=true`), the connector automatically determines the Kafka topic from the payload content. The Apex callout endpoint should have **no URL path** — just the base URL:
-
-```apex
-// Correct — no path, payload router determines topic
-req.setEndpoint('callout:Kafka_Connector');
-
-// Wrong — /webhook path may conflict with CamelDynamicTopicTransform
-req.setEndpoint('callout:Kafka_Connector/webhook');
-```
-
-If your connector config includes the `CamelDynamicTopicTransform` (which sets topic from the HTTP path), having a path like `/webhook` will override the payload router's topic. With no path, the payload router's topic (`sf_account_events`) is preserved through the transform chain.
-
-### Verifying the Setup
-
-1. **Test with a simple curl:**
-   ```bash
-   curl -X POST http://your-connector-host:8080 \
-     -H "Content-Type: application/json" \
-     -d '{
-       "data": {
-         "payload": {
-           "ChangeEventHeader": {
-             "entityName": "Account",
-             "recordIds": ["001TEST"],
-             "changeType": "CREATE"
-           },
-           "Id": "001TEST",
-           "Name": "Test Account"
-         },
-         "event": {"replayId": 1}
-       },
-       "channel": "/data/AccountChangeEvent"
-     }'
-   ```
-
-2. **Check Kafka for the record:**
-   ```bash
-   kafka-console-consumer --bootstrap-server localhost:9092 --topic sf_account_events --from-beginning
-   ```
-
-3. **Verify the key and value:**
-   - Key should contain `{"Id": "001TEST"}`
-   - Value should contain `{"Id": "001TEST", "Name": "Test Account", "__deleted": false}`
+**Full documentation**: [docs/SALESFORCE.md](docs/SALESFORCE.md)
 
 ---
 
-## 4. Fan-out Configuration
+## 4. Shopify Configuration
+
+Supported when `camel.source.payload.router.type=shopify`. Routes events based on the `X-Shopify-Topic` HTTP header (e.g., `orders/create`). Includes HMAC signature verification.
+
+| Resource | Generated Topic | Key | Example Topic Header |
+|---|---|---|---|
+| Orders | `{prefix}orders` | `{id}` | `orders/create`, `orders/cancelled` |
+| Products | `{prefix}products` | `{id}` | `products/update` |
+| Customers | `{prefix}customers` | `{id}` | `customers/delete` |
+| Draft Orders | `{prefix}draft_orders` | `{id}` | `draft_orders/create` |
+| Fulfillments | `{prefix}fulfillments` | `{id}` | `fulfillments/create` |
+| Collections | `{prefix}collections` | `{id}` | `collections/create` |
+| Inventory | `{prefix}inventory_items` | `{id}` | `inventory_items/update` |
+
+Fan-out: `orders.line_items`, `orders.shipping_lines`, `orders.tax_lines`, `products.variants`, `products.images`, `customers.addresses`
+
+HMAC config: `camel.source.payload.router.shopify.hmac.secret` (Password)
+
+**Full documentation**: [docs/SHOPIFY.md](docs/SHOPIFY.md)
+
+---
+
+## 5. Fan-out Configuration
 
 Fan-out splits nested arrays into separate Kafka topics, creating one record per array element.
 
@@ -608,7 +158,7 @@ Fan-out topics do NOT generate tombstone records when items are removed. For exa
 
 ---
 
-## 5. Detail Flattening
+## 6. Detail Flattening
 
 Promotes nested `detail` fields to top-level, avoiding nested JSON in the output.
 
@@ -652,7 +202,7 @@ For Salesforce CDC with empty prefix (`""`), fields are promoted directly since 
 
 ---
 
-## 6. Event Field Control
+## 7. Event Field Control
 
 Controls whether the `event` field (Zendesk) or `ChangeEventHeader` (Salesforce) is included in output.
 
@@ -671,7 +221,7 @@ Controls whether the `event` field (Zendesk) or `ChangeEventHeader` (Salesforce)
 
 ---
 
-## 7. Message Keys
+## 8. Message Keys
 
 Message keys are set automatically based on the provider's data model. No configuration needed.
 
@@ -683,35 +233,61 @@ When `flatten.detail.prefix` is changed (e.g., to `d_`), key field names update 
 
 ---
 
-## 8. Delete Detection
+## 9. Delete Detection and Operation Type
 
-Every main event record includes a `__deleted` boolean field.
+Every record includes:
+- `__deleted` (boolean, in value) — `true` for deletes, `false` for everything else
+- `__changeType` (string, in value) — full action name (CREATE, UPDATE, DELETE, SNAPSHOT, etc.)
+- `__op` (string, in Kafka header) — Debezium-compatible operation: `c` (create), `u` (update), `d` (delete), `r` (read/snapshot)
+
+### Operation Type Mapping
+
+| `__op` | Meaning | When |
+|--------|---------|------|
+| `c` | Create | New record created |
+| `u` | Update | Record updated (includes state changes like cancelled, fulfilled) |
+| `d` | Delete | Record permanently deleted |
+| `r` | Read | Snapshot backfill record |
 
 ### Zendesk Delete Rules
 
-| Event Name Pattern | `__deleted` | Examples |
-|-------------------|------------|---------|
-| Ends with `deleted` | `true` | `deleted`, `permanently_deleted`, `channel_deleted`, `group_membership_deleted` |
-| Ends with `removed` | `true` | `removed`, `vote_removed`, `work_item_removed` |
-| `soft_deleted` | `false` | Recoverable (in trash) |
-| `undeleted` | `false` | Restore from trash |
-| Everything else | `false` | `created`, `updated`, `comment_added`, etc. |
+| Event Name Pattern | `__deleted` | `__op` | Examples |
+|-------------------|------------|--------|---------|
+| Ends with `deleted` | `true` | `d` | `deleted`, `permanently_deleted`, `channel_deleted` |
+| Ends with `removed` | `true` | `d` | `removed`, `vote_removed`, `work_item_removed` |
+| `soft_deleted` | `false` | `u` | Recoverable (in trash) |
+| `undeleted` | `false` | `u` | Restore from trash |
+| `created` | `false` | `c` | New record |
+| Everything else | `false` | `u` | `updated`, `comment_added`, etc. |
 
 ### Salesforce Delete Rules
 
-| Change Type | `__deleted` |
-|------------|------------|
-| `DELETE` | `true` |
-| `GAP_DELETE` | `true` |
-| `UNDELETE`, `GAP_UNDELETE` | `false` |
-| `CREATE`, `UPDATE` | `false` |
-| PushTopic `deleted` | `true` |
-| PushTopic `undeleted` | `false` |
-| Platform Events | Always `false` |
+| Change Type | `__deleted` | `__op` |
+|------------|------------|--------|
+| `CREATE` | `false` | `c` |
+| `UPDATE` | `false` | `u` |
+| `DELETE` | `true` | `d` |
+| `UNDELETE` | `false` | `u` |
+| `GAP_DELETE` | `true` | `d` |
+| `GAP_CREATE` | `false` | `c` |
+| PushTopic `deleted` | `true` | `d` |
+| PushTopic `undeleted` | `false` | `u` |
+| Platform Events | Always `false` | `c` |
+| Snapshot | `false` | `r` |
+
+### Shopify Delete Rules
+
+| Action | `__deleted` | `__op` |
+|--------|------------|--------|
+| `create` | `false` | `c` |
+| `update` / `updated` | `false` | `u` |
+| `delete` | `true` | `d` |
+| `cancelled`, `fulfilled`, `paid`, etc. | `false` | `u` |
+| Snapshot | `false` | `r` |
 
 ---
 
-## 9. Source Dead Letter Queue
+## 10. Source Dead Letter Queue
 
 Captures errored records that would otherwise be lost or crash the connector.
 
@@ -751,7 +327,7 @@ errors.log.include.messages=true
 
 ---
 
-## 10. Snapshot
+## 11. Snapshot
 
 Debezium-style snapshot support for initial data load and on-demand backfill.
 
@@ -759,12 +335,15 @@ Debezium-style snapshot support for initial data load and on-demand backfill.
 
 Snapshot requires a provider-specific `ChunkReader` implementation to query the source API. If the provider does not support snapshots, all snapshot configuration is silently ignored and no resources (thread pools, signal consumers) are created.
 
-| Provider | Snapshot Support | ChunkReader |
-|----------|-----------------|-------------|
-| Salesforce | Yes | SOQL REST API with Id-based pagination |
-| Zendesk | Not yet | Planned (Incremental Export API) |
+| Provider | Snapshot Support | ChunkReader | Auth |
+|----------|-----------------|-------------|------|
+| Salesforce | Yes | SOQL REST API with Id-based pagination | OAuth2 (client credentials or password) |
+| Shopify | Yes | GraphQL Admin API with cursor pagination (250/page) | Static token or client credentials (24h refresh) |
+| Zendesk | Not yet | Planned (Incremental Export API) | — |
 
-If you configure `snapshot.mode=initial` or `snapshot.signal.topic` for a provider without snapshot support (e.g., Zendesk), the connector logs a warning and continues with CDC only. No thread pools, signal consumers, or coordinators are started.
+If you configure `snapshot.mode=initial` or `snapshot.signal.topic` for a provider without snapshot support (e.g., Zendesk), the connector logs a warning and continues with webhooks only. No thread pools, signal consumers, or coordinators are started.
+
+Provider-specific snapshot configuration: [docs/SALESFORCE.md](docs/SALESFORCE.md#snapshot), [docs/SHOPIFY.md](docs/SHOPIFY.md#snapshot-backfill).
 
 ### Snapshot Modes
 
@@ -1044,7 +623,7 @@ The snapshot output queue is bounded (10,000 records max). When full, snapshot t
 
 ---
 
-## 11. Full Configuration Reference
+## 12. Full Configuration Reference
 
 ### Payload Routing
 
@@ -1059,6 +638,19 @@ The snapshot output queue is bounded (10,000 records max). When full, snapshot t
 | `camel.source.payload.router.flatten.detail` | Boolean | `false` |
 | `camel.source.payload.router.flatten.detail.prefix` | String | `detail_` |
 | `camel.source.payload.router.include.event` | Boolean | `true` |
+
+### Shopify
+
+| Property | Type | Default |
+|----------|------|---------|
+| `camel.source.payload.router.shopify.hmac.secret` | Password | `""` |
+
+### Native CDC
+
+| Property | Type | Default |
+|----------|------|---------|
+| `camel.source.cdc.enabled` | Boolean | `false` |
+| `camel.source.cdc.channels` | String | `""` |
 
 ### Source DLQ
 
@@ -1086,10 +678,15 @@ The snapshot output queue is bounded (10,000 records max). When full, snapshot t
 | `camel.source.snapshot.salesforce.auth.client.secret` | Password | `""` |
 | `camel.source.snapshot.salesforce.auth.username` | String | `""` |
 | `camel.source.snapshot.salesforce.auth.password` | Password | `""` |
+| `camel.source.snapshot.shopify.store.url` | String | `""` |
+| `camel.source.snapshot.shopify.access.token` | Password | `""` |
+| `camel.source.snapshot.shopify.client.id` | String | `""` |
+| `camel.source.snapshot.shopify.client.secret` | Password | `""` |
+| `camel.source.snapshot.shopify.api.version` | String | `2024-10` |
 
 ---
 
-## 12. Example Configurations
+## 13. Example Configurations
 
 ### Zendesk — Upsert Mode (State Table)
 

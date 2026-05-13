@@ -354,6 +354,18 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
         return result;
     }
 
+    private String eventNameToOp(String eventType) {
+        if (eventType == null) return "u";
+        String eventName = extractEventName(eventType);
+        if (eventName == null) return "u";
+        if ("created".equals(eventName)) return "c";
+        if (eventName.endsWith("deleted") || eventName.endsWith("removed")) {
+            if ("soft_deleted".equals(eventName) || "undeleted".equals(eventName)) return "u";
+            return "d";
+        }
+        return "u";
+    }
+
     private boolean isDeleteEvent(String eventType) {
         if (eventType == null) {
             return false;
@@ -451,6 +463,11 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
 
     private RoutedRecord createRecord(String topicSuffix, Map<String, Object> data, String eventType,
                                       Map<String, Object> keyFields) {
+        return createRecord(topicSuffix, data, eventType, keyFields, eventNameToOp(eventType));
+    }
+
+    private RoutedRecord createRecord(String topicSuffix, Map<String, Object> data, String eventType,
+                                      Map<String, Object> keyFields, String op) {
         String fullTopic = topicPrefix + topicSuffix;
         String json;
         try {
@@ -458,7 +475,7 @@ public class ZendeskPayloadStrategy implements PayloadRoutingStrategy {
         } catch (JsonProcessingException e) {
             throw new PayloadRoutingException("Failed to serialize record payload to JSON", e);
         }
-        return new RoutedRecord(fullTopic, json, eventType, keyFields);
+        return new RoutedRecord(fullTopic, json, eventType, keyFields, op);
     }
 
     @SuppressWarnings("unchecked")

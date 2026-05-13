@@ -1,9 +1,12 @@
 package org.apache.camel.kafkaconnector.nettyhttp.routing;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
+import org.apache.camel.kafkaconnector.nettyhttp.routing.shopify.ShopifyPayloadStrategy;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.zendesk.ZendeskPayloadStrategy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -262,5 +265,70 @@ public class PayloadRouterTest {
         List<RoutedRecord> records = skipRouter.route(json);
 
         assertTrue(records.isEmpty());
+    }
+
+    // --- Shopify Strategy Factory ---
+
+    @Test
+    void testCreateStrategyShopify() {
+        PayloadRoutingStrategy strategy = PayloadRouter.createStrategy("shopify");
+        assertNotNull(strategy);
+        assertTrue(strategy instanceof ShopifyPayloadStrategy);
+    }
+
+    @Test
+    void testCreateStrategyShopifyCaseInsensitive() {
+        PayloadRoutingStrategy strategy = PayloadRouter.createStrategy("SHOPIFY");
+        assertNotNull(strategy);
+        assertTrue(strategy instanceof ShopifyPayloadStrategy);
+    }
+
+    // --- Shopify End-to-End Pipeline ---
+
+    @Test
+    void testShopifyOrderCreatePipeline() {
+        PayloadRoutingStrategy strategy = PayloadRouter.createStrategy("shopify");
+        strategy.configure("shopify_", UnknownTypeBehavior.DEFAULT_TOPIC, "unknown");
+        PayloadRouter shopifyRouter = new PayloadRouter(strategy);
+
+        String json = "{\"id\":12345,\"email\":\"test@example.com\",\"total_price\":\"29.99\"}";
+        Map<String, Object> headers = new HashMap<>();
+        headers.put("X-Shopify-Topic", "orders/create");
+        headers.put("X-Shopify-Shop-Domain", "testshop.myshopify.com");
+
+        List<RoutedRecord> records = shopifyRouter.route(json, headers);
+
+        assertEquals(1, records.size());
+        assertEquals("shopify_orders", records.get(0).getTopic());
+        assertEquals("orders.create", records.get(0).getEventType());
+        assertTrue(records.get(0).hasKey());
+        assertEquals(12345, records.get(0).getKeyFields().get("id"));
+    }
+
+    @Test
+    void testShopifyOrderWithFanoutPipeline() {
+        PayloadRoutingStrategy strategy = PayloadRouter.createStrategy("shopify");
+        strategy.configure("shopify_", UnknownTypeBehavior.DEFAULT_TOPIC, "unknown");
+        Set<String> fanout = new HashSet<>();
+        fanout.add("orders.line_items");
+        strategy.configureAdvanced(fanout, false, "", true, null);
+        PayloadRouter shopifyRouter = new PayloadRouter(strategy);
+
+        String json = "{"
+                + "\"id\":100,"
+                + "\"line_items\":["
+                +   "{\"id\":1,\"title\":\"Widget\",\"quantity\":2},"
+                +   "{\"id\":2,\"title\":\"Gadget\",\"quantity\":1}"
+                + "]"
+                + "}";
+        Map<String, Object> headers = new HashMap<>();
+        headers.put("X-Shopify-Topic", "orders/create");
+
+        List<RoutedRecord> records = shopifyRouter.route(json, headers);
+
+        assertEquals(3, records.size());
+        assertEquals("shopify_orders", records.get(0).getTopic());
+        assertEquals("shopify_orders_line_items", records.get(1).getTopic());
+        assertEquals("shopify_orders_line_items", records.get(2).getTopic());
     }
 }

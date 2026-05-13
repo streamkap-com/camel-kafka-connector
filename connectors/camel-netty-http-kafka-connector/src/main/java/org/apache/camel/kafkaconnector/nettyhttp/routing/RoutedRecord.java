@@ -9,16 +9,22 @@ public class RoutedRecord {
     private final String payload;
     private final String eventType;
     private final Map<String, Object> keyFields;
+    private final String op;
 
     public RoutedRecord(String topic, String payload, String eventType) {
-        this(topic, payload, eventType, Collections.emptyMap());
+        this(topic, payload, eventType, Collections.emptyMap(), null);
     }
 
     public RoutedRecord(String topic, String payload, String eventType, Map<String, Object> keyFields) {
+        this(topic, payload, eventType, keyFields, null);
+    }
+
+    public RoutedRecord(String topic, String payload, String eventType, Map<String, Object> keyFields, String op) {
         this.topic = topic;
         this.payload = payload;
         this.eventType = eventType;
         this.keyFields = keyFields != null ? keyFields : Collections.emptyMap();
+        this.op = op;
     }
 
     public String getTopic() {
@@ -35,6 +41,10 @@ public class RoutedRecord {
 
     public Map<String, Object> getKeyFields() {
         return keyFields;
+    }
+
+    public String getOp() {
+        return op;
     }
 
     public boolean hasKey() {
