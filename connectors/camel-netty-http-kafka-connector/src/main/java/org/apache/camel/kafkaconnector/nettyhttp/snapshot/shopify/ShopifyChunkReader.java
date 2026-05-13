@@ -53,7 +53,7 @@ public class ShopifyChunkReader implements ChunkReader {
                 + "product { id } "
                 + "selectedOptions { name value } "
                 + "} } } "
-                + "images(first: 10) { edges { node { id url altText width height createdAt } } }"));
+                + "images(first: 10) { edges { node { id url altText width height } } }"));
         OBJECT_CONFIGS.put("customers", new ObjectConfig("customers", "customersCount",
                 "id firstName lastName email phone createdAt updatedAt state numberOfOrders "
                 + "taxExempt verifiedEmail "
