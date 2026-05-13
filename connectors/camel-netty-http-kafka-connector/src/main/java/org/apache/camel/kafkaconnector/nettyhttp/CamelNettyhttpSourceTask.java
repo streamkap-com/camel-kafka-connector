@@ -68,6 +68,8 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
 
     private PayloadRouter payloadRouter;
     private String routerTopicPrefix = "";
+    private Map<String, List<String>> snapshotFanoutMap = Collections.emptyMap();
+    private String snapshotIdField = "id";
     private SourceDlqProducer dlqProducer;
     private SnapshotEngine snapshotEngine;
     private CdcSubscriber cdcSubscriber;
@@ -112,6 +114,7 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             // Advanced routing config
             String fanoutFieldsStr = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FANOUT_FIELDS_CONF);
             Set<String> fanoutFields = new HashSet<>(parseCsv(fanoutFieldsStr));
+            this.snapshotFanoutMap = buildFanoutMap(fanoutFields);
             boolean flattenDetail = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_CONF);
             String flattenDetailPrefix = config.getString(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_FLATTEN_DETAIL_PREFIX_CONF);
             boolean includeEvent = config.getBoolean(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_CONF);
@@ -216,6 +219,8 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             return;
         }
 
+        this.snapshotIdField = chunkReader.getIdFieldName();
+
         int maxThreads = config.getInt(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_MAX_THREADS_CONF);
         int chunkSize = config.getInt(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_CHUNK_SIZE_CONF);
         long chunkDelayMs = config.getLong(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_SNAPSHOT_CHUNK_DELAY_MS_CONF);
@@ -263,6 +268,7 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
             List<SnapshotRecord> snapshotRecords = snapshotEngine.poll();
             for (SnapshotRecord sr : snapshotRecords) {
                 records.add(snapshotRecordToSourceRecord(sr));
+                fanoutSnapshotRecord(sr, records);
             }
         }
 
@@ -383,6 +389,99 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
                 System.currentTimeMillis());
         record.headers().addString("__op", "r");
         return record;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void fanoutSnapshotRecord(SnapshotRecord sr, List<SourceRecord> records) {
+        if (snapshotFanoutMap.isEmpty()) {
+            return;
+        }
+
+        String objectName = sr.getObjectName();
+        List<String> fields = snapshotFanoutMap.get(objectName.toLowerCase());
+        if (fields == null) {
+            return;
+        }
+
+        Map<String, Object> data = sr.getData();
+        Object parentId = data.get(snapshotIdField);
+
+        for (String fieldName : fields) {
+            Object nested = data.get(fieldName);
+            if (!(nested instanceof List)) {
+                continue;
+            }
+
+            String topic = routerTopicPrefix + objectName + "_" + fieldName;
+
+            List<?> items = (List<?>) nested;
+            for (Object item : items) {
+                if (!(item instanceof Map)) continue;
+
+                Map<String, Object> itemData = new java.util.LinkedHashMap<>((Map<String, Object>) item);
+                itemData.put("__changeType", "SNAPSHOT");
+                itemData.put("__deleted", false);
+                if (parentId != null) {
+                    itemData.put(snapshotIdField, parentId);
+                }
+
+                String payload;
+                try {
+                    payload = OBJECT_MAPPER.writeValueAsString(itemData);
+                } catch (Exception e) {
+                    LOG.error("Failed to serialize fan-out snapshot record: {}", e.getMessage());
+                    continue;
+                }
+
+                Schema bodySchema = SchemaHelper.buildSchemaBuilderForType(payload);
+
+                Object itemId = ((Map<String, Object>) item).get("id");
+                Map<String, Object> keyFields = new java.util.LinkedHashMap<>();
+                if (parentId != null) {
+                    keyFields.put(snapshotIdField, parentId);
+                }
+                if (itemId != null) {
+                    keyFields.put("item_id", itemId);
+                }
+
+                Schema keySchema = null;
+                Object key = null;
+                if (!keyFields.isEmpty()) {
+                    Struct keyStruct = buildKeyStruct(topic + "_key", keyFields);
+                    keySchema = keyStruct.schema();
+                    key = keyStruct;
+                }
+
+                SourceRecord fanoutRecord = new SourceRecord(
+                        sr.getSourcePartition(),
+                        sr.getSourceOffset(),
+                        topic,
+                        null, keySchema, key,
+                        bodySchema, payload,
+                        System.currentTimeMillis());
+                fanoutRecord.headers().addString("__op", "r");
+                records.add(fanoutRecord);
+            }
+        }
+    }
+
+    /**
+     * Pre-compute fanout config into a lookup map: objectName (lowercase) -> list of field names.
+     * e.g., {"products.variants", "orders.line_items"} -> {"products": ["variants"], "orders": ["line_items"]}
+     */
+    private static Map<String, List<String>> buildFanoutMap(Set<String> fanoutFields) {
+        if (fanoutFields == null || fanoutFields.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, List<String>> map = new HashMap<>();
+        for (String field : fanoutFields) {
+            int dot = field.indexOf('.');
+            if (dot < 0) continue;
+            String object = field.substring(0, dot).toLowerCase();
+            String fieldName = field.substring(dot + 1);
+            map.computeIfAbsent(object, k -> new ArrayList<>()).add(fieldName);
+        }
+        return map;
     }
 
     @Override

@@ -47,18 +47,19 @@ The connector parses the `X-Shopify-Topic` header to determine the resource type
 
 ## Change Type Mapping
 
-Each record gets `__changeType` and `__deleted` fields:
+Each record gets `__changeType` and `__deleted` in the value, and `__op` as a Kafka header:
 
-| Shopify Action | `__changeType` | `__deleted` |
-|---|---|---|
-| `create` | `CREATE` | `false` |
-| `update` / `updated` | `UPDATE` | `false` |
-| `delete` | `DELETE` | `true` |
-| `cancelled` | `CANCELLED` | `false` |
-| `fulfilled` | `FULFILLED` | `false` |
-| `paid` | `PAID` | `false` |
-| `partially_fulfilled` | `PARTIALLY_FULFILLED` | `false` |
-| Any other action | `ACTION.toUpperCase()` | `false` |
+| Shopify Action | `__changeType` | `__op` (header) | `__deleted` |
+|---|---|---|---|
+| `create` | `CREATE` | `c` | `false` |
+| `update` / `updated` | `UPDATE` | `u` | `false` |
+| `delete` | `DELETE` | `d` | `true` |
+| `cancelled` | `CANCELLED` | `u` | `false` |
+| `fulfilled` | `FULFILLED` | `u` | `false` |
+| `paid` | `PAID` | `u` | `false` |
+| `partially_fulfilled` | `PARTIALLY_FULFILLED` | `u` | `false` |
+| Any other action | `ACTION.toUpperCase()` | `u` | `false` |
+| Snapshot | `SNAPSHOT` | `r` | `false` |
 
 ## Event Metadata
 
@@ -403,14 +404,16 @@ The connector supports Debezium-style initial and signal-triggered snapshots for
 
 | Object | GraphQL Connection | Fields Included |
 |---|---|---|
-| `orders` | `orders` | id, name, email, prices, financial/fulfillment status, line items |
-| `products` | `products` | id, title, handle, status, vendor, variants, images |
-| `customers` | `customers` | id, name, email, phone, state, addresses |
-| `draft_orders` | `draftOrders` | id, name, status, line items |
-| `collections` | `collections` | id, title, handle, sort order |
-| `inventory_items` | `inventoryItems` | id, sku, tracked, requires shipping |
+| `orders` | `orders` | id, name, email, createdAt, updatedAt, totalPriceSet (amount + currency), displayFinancialStatus, displayFulfillmentStatus, cancelledAt, closedAt, customer (id + email), lineItems (id, title, quantity, sku, price) |
+| `products` | `products` | id, title, handle, status, vendor, productType, createdAt, updatedAt, variants (id, title, sku, price, inventoryQuantity), images (id, url, altText) |
+| `customers` | `customers` | id, firstName, lastName, email, phone, createdAt, updatedAt, state, numberOfOrders, addresses (address1, address2, city, province, country, zip) |
+| `draft_orders` | `draftOrders` | id, name, status, createdAt, updatedAt, lineItems (id, title, quantity, price) |
+| `collections` | `collections` | id, title, handle, updatedAt, sortOrder |
+| `inventory_items` | `inventoryItems` | id, sku, createdAt, updatedAt, requiresShipping, tracked |
 
-Snapshot records include `__changeType: "SNAPSHOT"` and `__deleted: false`.
+Snapshot records include `__changeType: "SNAPSHOT"`, `__deleted: false`, and `__op: "r"` as a Kafka header.
+
+Fan-out also works for snapshot records. If `products.variants` is configured in `fanout.fields`, each product snapshot produces the main product record + one record per variant in `{prefix}products_variants`.
 
 ### Signal Table (On-Demand Snapshots)
 
@@ -420,18 +423,33 @@ Configure a Kafka signal topic for ad-hoc snapshots (same as Debezium):
 camel.source.snapshot.signal.topic=shopify_snapshot_signals
 ```
 
-Then send a signal message to trigger a snapshot:
+Then send a signal message to trigger a snapshot. Both Debezium-compatible (`data-collections`) and our format (`objects`) are supported:
 
 ```json
 {
   "id": "backfill-orders-2024",
   "type": "execute-snapshot",
   "data": {
-    "data-collections": ["orders"],
+    "data-collections": ["orders", "products", "customers"],
     "type": "INCREMENTAL"
   }
 }
 ```
+
+Or equivalently:
+
+```json
+{
+  "id": "backfill-orders-2024",
+  "type": "execute-snapshot",
+  "data": {
+    "objects": ["orders", "products", "customers"],
+    "type": "INCREMENTAL"
+  }
+}
+```
+
+Other signal types: `stop-snapshot`, `pause-snapshot`, `resume-snapshot`.
 
 ### Filtered Snapshots
 

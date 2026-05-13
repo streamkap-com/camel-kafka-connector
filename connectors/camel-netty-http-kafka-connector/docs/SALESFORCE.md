@@ -8,26 +8,26 @@ Supported when `camel.source.payload.router.type=salesforce`.
 
 Detected by presence of `data.payload.ChangeEventHeader`.
 
-| changeType | Topic | `__changeType` | `__deleted` |
-|-----------|-------|----------------|------------|
-| `CREATE` | `{prefix}{entity}` | `CREATE` | `false` |
-| `UPDATE` | `{prefix}{entity}` | `UPDATE` | `false` |
-| `DELETE` | `{prefix}{entity}` | `DELETE` | `true` |
-| `UNDELETE` | `{prefix}{entity}` | `UNDELETE` | `false` |
-| `GAP_CREATE` | `{prefix}gap` | `GAP_CREATE` | `false` |
-| `GAP_DELETE` | `{prefix}gap` | `GAP_DELETE` | `true` |
-| `GAP_OVERFLOW` | `{prefix}gap` | `GAP_OVERFLOW` | `false` |
+| changeType | Topic | `__changeType` | `__op` (header) | `__deleted` |
+|-----------|-------|----------------|-----------------|------------|
+| `CREATE` | `{prefix}{entity}` | `CREATE` | `c` | `false` |
+| `UPDATE` | `{prefix}{entity}` | `UPDATE` | `u` | `false` |
+| `DELETE` | `{prefix}{entity}` | `DELETE` | `d` | `true` |
+| `UNDELETE` | `{prefix}{entity}` | `UNDELETE` | `u` | `false` |
+| `GAP_CREATE` | `{prefix}gap` | `GAP_CREATE` | `c` | `false` |
+| `GAP_DELETE` | `{prefix}gap` | `GAP_DELETE` | `d` | `true` |
+| `GAP_OVERFLOW` | `{prefix}gap` | `GAP_OVERFLOW` | `u` | `false` |
 
 ### PushTopic Events
 
 Detected by presence of `data.sobject`.
 
-| event.type | Topic | `__changeType` |
-|-----------|-------|----------------|
-| `created` | `{prefix}{topicname}` | `CREATED` |
-| `updated` | `{prefix}{topicname}` | `UPDATED` |
-| `deleted` | `{prefix}{topicname}` | `DELETED` |
-| `undeleted` | `{prefix}{topicname}` | `UNDELETED` |
+| event.type | Topic | `__changeType` | `__op` (header) |
+|-----------|-------|----------------|-----------------|
+| `created` | `{prefix}{topicname}` | `CREATED` | `c` |
+| `updated` | `{prefix}{topicname}` | `UPDATED` | `u` |
+| `deleted` | `{prefix}{topicname}` | `DELETED` | `d` |
+| `undeleted` | `{prefix}{topicname}` | `UNDELETED` | `u` |
 
 ### Platform Events
 
@@ -37,7 +37,7 @@ Detected by presence of `data.payload` without `ChangeEventHeader`.
 |---|-------|----------------|
 | All | `{prefix}{eventname}` | `PUBLISHED` |
 
-Platform events always have `__deleted = false`.
+Platform events always have `__deleted = false` and `__op = "c"` (header).
 
 ## Message Keys
 
@@ -67,7 +67,19 @@ Supports Debezium-style initial and incremental snapshots via the Salesforce Bul
 | `camel.source.snapshot.salesforce.auth.username` | String | `""` | Salesforce username |
 | `camel.source.snapshot.salesforce.auth.password` | Password | `""` | Salesforce password (with security token) |
 
-Snapshot records include `__changeType: "SNAPSHOT"` and `__deleted: false`.
+Snapshot records include `__changeType: "SNAPSHOT"`, `__deleted: false`, and `__op: "r"` as a Kafka header.
+
+Signal format supports both Debezium-compatible (`data-collections`) and our format (`objects`):
+```json
+{
+  "id": "backfill-accounts",
+  "type": "execute-snapshot",
+  "data": {
+    "data-collections": ["Account", "Contact"],
+    "type": "INCREMENTAL"
+  }
+}
+```
 
 ## Setting Up Salesforce Webhook Triggers
 

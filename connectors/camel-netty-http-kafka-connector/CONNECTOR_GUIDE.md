@@ -233,31 +233,57 @@ When `flatten.detail.prefix` is changed (e.g., to `d_`), key field names update 
 
 ---
 
-## 9. Delete Detection
+## 9. Delete Detection and Operation Type
 
-Every main event record includes a `__deleted` boolean field.
+Every record includes:
+- `__deleted` (boolean, in value) — `true` for deletes, `false` for everything else
+- `__changeType` (string, in value) — full action name (CREATE, UPDATE, DELETE, SNAPSHOT, etc.)
+- `__op` (string, in Kafka header) — Debezium-compatible operation: `c` (create), `u` (update), `d` (delete), `r` (read/snapshot)
+
+### Operation Type Mapping
+
+| `__op` | Meaning | When |
+|--------|---------|------|
+| `c` | Create | New record created |
+| `u` | Update | Record updated (includes state changes like cancelled, fulfilled) |
+| `d` | Delete | Record permanently deleted |
+| `r` | Read | Snapshot backfill record |
 
 ### Zendesk Delete Rules
 
-| Event Name Pattern | `__deleted` | Examples |
-|-------------------|------------|---------|
-| Ends with `deleted` | `true` | `deleted`, `permanently_deleted`, `channel_deleted`, `group_membership_deleted` |
-| Ends with `removed` | `true` | `removed`, `vote_removed`, `work_item_removed` |
-| `soft_deleted` | `false` | Recoverable (in trash) |
-| `undeleted` | `false` | Restore from trash |
-| Everything else | `false` | `created`, `updated`, `comment_added`, etc. |
+| Event Name Pattern | `__deleted` | `__op` | Examples |
+|-------------------|------------|--------|---------|
+| Ends with `deleted` | `true` | `d` | `deleted`, `permanently_deleted`, `channel_deleted` |
+| Ends with `removed` | `true` | `d` | `removed`, `vote_removed`, `work_item_removed` |
+| `soft_deleted` | `false` | `u` | Recoverable (in trash) |
+| `undeleted` | `false` | `u` | Restore from trash |
+| `created` | `false` | `c` | New record |
+| Everything else | `false` | `u` | `updated`, `comment_added`, etc. |
 
 ### Salesforce Delete Rules
 
-| Change Type | `__deleted` |
-|------------|------------|
-| `DELETE` | `true` |
-| `GAP_DELETE` | `true` |
-| `UNDELETE`, `GAP_UNDELETE` | `false` |
-| `CREATE`, `UPDATE` | `false` |
-| PushTopic `deleted` | `true` |
-| PushTopic `undeleted` | `false` |
-| Platform Events | Always `false` |
+| Change Type | `__deleted` | `__op` |
+|------------|------------|--------|
+| `CREATE` | `false` | `c` |
+| `UPDATE` | `false` | `u` |
+| `DELETE` | `true` | `d` |
+| `UNDELETE` | `false` | `u` |
+| `GAP_DELETE` | `true` | `d` |
+| `GAP_CREATE` | `false` | `c` |
+| PushTopic `deleted` | `true` | `d` |
+| PushTopic `undeleted` | `false` | `u` |
+| Platform Events | Always `false` | `c` |
+| Snapshot | `false` | `r` |
+
+### Shopify Delete Rules
+
+| Action | `__deleted` | `__op` |
+|--------|------------|--------|
+| `create` | `false` | `c` |
+| `update` / `updated` | `false` | `u` |
+| `delete` | `true` | `d` |
+| `cancelled`, `fulfilled`, `paid`, etc. | `false` | `u` |
+| Snapshot | `false` | `r` |
 
 ---
 
@@ -309,12 +335,15 @@ Debezium-style snapshot support for initial data load and on-demand backfill.
 
 Snapshot requires a provider-specific `ChunkReader` implementation to query the source API. If the provider does not support snapshots, all snapshot configuration is silently ignored and no resources (thread pools, signal consumers) are created.
 
-| Provider | Snapshot Support | ChunkReader |
-|----------|-----------------|-------------|
-| Salesforce | Yes | SOQL REST API with Id-based pagination |
-| Zendesk | Not yet | Planned (Incremental Export API) |
+| Provider | Snapshot Support | ChunkReader | Auth |
+|----------|-----------------|-------------|------|
+| Salesforce | Yes | SOQL REST API with Id-based pagination | OAuth2 (client credentials or password) |
+| Shopify | Yes | GraphQL Admin API with cursor pagination (250/page) | Static token or client credentials (24h refresh) |
+| Zendesk | Not yet | Planned (Incremental Export API) | — |
 
-If you configure `snapshot.mode=initial` or `snapshot.signal.topic` for a provider without snapshot support (e.g., Zendesk), the connector logs a warning and continues with CDC only. No thread pools, signal consumers, or coordinators are started.
+If you configure `snapshot.mode=initial` or `snapshot.signal.topic` for a provider without snapshot support (e.g., Zendesk), the connector logs a warning and continues with webhooks only. No thread pools, signal consumers, or coordinators are started.
+
+Provider-specific snapshot configuration: [docs/SALESFORCE.md](docs/SALESFORCE.md#snapshot), [docs/SHOPIFY.md](docs/SHOPIFY.md#snapshot-backfill).
 
 ### Snapshot Modes
 
@@ -616,6 +645,13 @@ The snapshot output queue is bounded (10,000 records max). When full, snapshot t
 |----------|------|---------|
 | `camel.source.payload.router.shopify.hmac.secret` | Password | `""` |
 
+### Native CDC
+
+| Property | Type | Default |
+|----------|------|---------|
+| `camel.source.cdc.enabled` | Boolean | `false` |
+| `camel.source.cdc.channels` | String | `""` |
+
 ### Source DLQ
 
 | Property | Type | Default |
@@ -642,6 +678,11 @@ The snapshot output queue is bounded (10,000 records max). When full, snapshot t
 | `camel.source.snapshot.salesforce.auth.client.secret` | Password | `""` |
 | `camel.source.snapshot.salesforce.auth.username` | String | `""` |
 | `camel.source.snapshot.salesforce.auth.password` | Password | `""` |
+| `camel.source.snapshot.shopify.store.url` | String | `""` |
+| `camel.source.snapshot.shopify.access.token` | Password | `""` |
+| `camel.source.snapshot.shopify.client.id` | String | `""` |
+| `camel.source.snapshot.shopify.client.secret` | Password | `""` |
+| `camel.source.snapshot.shopify.api.version` | String | `2024-10` |
 
 ---
 
