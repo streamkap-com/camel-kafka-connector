@@ -150,29 +150,45 @@ public class ShopifyAuthClient {
 
     /**
      * Execute a GraphQL query against the Shopify Admin API.
-     * Automatically handles token refresh on 401.
+     * Retries on timeout (up to 2 retries) and auto-refreshes token on 401.
      */
     public HttpResponse<String> executeGraphql(String queryBody) throws Exception {
-        HttpRequest request = buildGraphqlRequest(queryBody);
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        int maxRetries = 2;
+        Exception lastException = null;
 
-        // Auto-retry on 401 with fresh token
-        if (response.statusCode() == 401 && staticAccessToken == null) {
-            LOG.info("Shopify token expired, refreshing...");
-            invalidateToken();
-            request = buildGraphqlRequest(queryBody);
-            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        }
+        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                HttpRequest request = buildGraphqlRequest(queryBody);
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-        if (response.statusCode() == 401 || response.statusCode() == 403) {
-            throw new RuntimeException("Shopify authentication failed (" + response.statusCode()
-                    + "). Check your credentials.");
-        }
-        if (response.statusCode() != 200) {
-            throw new RuntimeException("Shopify API error: " + response.statusCode() + " " + response.body());
-        }
+                // Auto-retry on 401 with fresh token
+                if (response.statusCode() == 401 && staticAccessToken == null) {
+                    LOG.info("Shopify token expired, refreshing...");
+                    invalidateToken();
+                    request = buildGraphqlRequest(queryBody);
+                    response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                }
 
-        return response;
+                if (response.statusCode() == 401 || response.statusCode() == 403) {
+                    throw new RuntimeException("Shopify authentication failed (" + response.statusCode()
+                            + "). Check your credentials.");
+                }
+                if (response.statusCode() != 200) {
+                    throw new RuntimeException("Shopify API error: " + response.statusCode() + " " + response.body());
+                }
+                return response;
+
+            } catch (java.net.http.HttpTimeoutException e) {
+                lastException = e;
+                if (attempt < maxRetries) {
+                    long waitMs = (attempt + 1) * 5000L;
+                    LOG.warn("Shopify GraphQL request timed out (attempt {}/{}), retrying in {}ms...",
+                            attempt + 1, maxRetries + 1, waitMs);
+                    Thread.sleep(waitMs);
+                }
+            }
+        }
+        throw new RuntimeException("Shopify GraphQL request timed out after " + (maxRetries + 1) + " attempts", lastException);
     }
 
     private HttpRequest buildGraphqlRequest(String queryBody) throws Exception {
@@ -181,7 +197,7 @@ public class ShopifyAuthClient {
                 .header("Content-Type", "application/json")
                 .header("X-Shopify-Access-Token", getAccessToken())
                 .POST(HttpRequest.BodyPublishers.ofString(queryBody))
-                .timeout(Duration.ofSeconds(30))
+                .timeout(Duration.ofSeconds(60))
                 .build();
     }
 
