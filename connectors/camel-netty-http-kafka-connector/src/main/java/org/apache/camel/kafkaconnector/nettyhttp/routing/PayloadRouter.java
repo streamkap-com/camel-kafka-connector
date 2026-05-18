@@ -7,6 +7,7 @@ import java.util.Map;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.salesforce.SalesforcePayloadStrategy;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.shopify.ShopifyPayloadStrategy;
+import org.apache.camel.kafkaconnector.nettyhttp.routing.stripe.StripePayloadStrategy;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.zendesk.ZendeskPayloadStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -75,9 +76,11 @@ public class PayloadRouter {
                 return new SalesforcePayloadStrategy();
             case "shopify":
                 return new ShopifyPayloadStrategy();
+            case "stripe":
+                return new StripePayloadStrategy();
             default:
                 throw new PayloadRoutingException("Unknown payload router type: '" + type
-                        + "'. Supported types: zendesk, salesforce, shopify");
+                        + "'. Supported types: zendesk, salesforce, shopify, stripe");
         }
     }
 }

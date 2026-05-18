@@ -137,6 +137,13 @@ public class CamelNettyhttpSourceTask extends CamelSourceTask {
                     LOG.info("Shopify HMAC verification enabled");
                 }
             }
+            if ("stripe".equalsIgnoreCase(routerType)) {
+                String signingSecret = config.getPassword(CamelNettyhttpSourceConnectorConfig.CAMEL_SOURCE_PAYLOAD_ROUTER_STRIPE_SIGNING_SECRET_CONF).value();
+                if (signingSecret != null && !signingSecret.isEmpty()) {
+                    strategy.configureHmac(signingSecret);
+                    LOG.info("Stripe signature verification enabled");
+                }
+            }
 
             payloadRouter = new PayloadRouter(strategy);
             LOG.info("Payload routing enabled with type '{}', topic prefix '{}', fanout fields: {}, flatten detail: {}",

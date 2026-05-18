@@ -66,6 +66,16 @@ public class CamelNettyhttpSourceConnectorConfig
     public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_DEFAULT = "";
     public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_DOC = "Shopify app client secret for HMAC-SHA256 webhook signature verification. When set, every incoming webhook is verified against the X-Shopify-Hmac-Sha256 header. Leave empty to disable verification.";
 
+    // Stripe-specific config
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_STRIPE_SIGNING_SECRET_CONF = "camel.source.payload.router.stripe.signing.secret";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_STRIPE_SIGNING_SECRET_DEFAULT = "";
+    public static final String CAMEL_SOURCE_PAYLOAD_ROUTER_STRIPE_SIGNING_SECRET_DOC = "Stripe webhook signing secret (whsec_xxx) for signature verification. When set, verifies every incoming webhook against the Stripe-Signature header. Leave empty to disable.";
+
+    // Stripe snapshot config
+    public static final String CAMEL_SOURCE_SNAPSHOT_STRIPE_API_KEY_CONF = "camel.source.snapshot.stripe.api.key";
+    public static final String CAMEL_SOURCE_SNAPSHOT_STRIPE_API_KEY_DEFAULT = "";
+    public static final String CAMEL_SOURCE_SNAPSHOT_STRIPE_API_KEY_DOC = "Stripe API secret key (sk_live_xxx or sk_test_xxx) for snapshot List API access.";
+
     // Source DLQ configuration
     public static final String CAMEL_SOURCE_DLQ_ENABLED_CONF = "camel.source.dlq.enabled";
     public static final Boolean CAMEL_SOURCE_DLQ_ENABLED_DEFAULT = false;
@@ -612,6 +622,8 @@ public class CamelNettyhttpSourceConnectorConfig
         conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_INCLUDE_EVENT_DOC);
         // Shopify config
         conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_SHOPIFY_HMAC_SECRET_DOC);
+        // Stripe config
+        conf.define(CAMEL_SOURCE_PAYLOAD_ROUTER_STRIPE_SIGNING_SECRET_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_PAYLOAD_ROUTER_STRIPE_SIGNING_SECRET_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_PAYLOAD_ROUTER_STRIPE_SIGNING_SECRET_DOC);
         // Source DLQ config
         conf.define(CAMEL_SOURCE_DLQ_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_DLQ_ENABLED_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_DLQ_ENABLED_DOC);
         conf.define(CAMEL_SOURCE_DLQ_TOPIC_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_DLQ_TOPIC_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_DLQ_TOPIC_DOC);
@@ -637,6 +649,8 @@ public class CamelNettyhttpSourceConnectorConfig
         conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_ID_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_ID_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_ID_DOC);
         conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_SECRET_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_SECRET_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_CLIENT_SECRET_DOC);
         conf.define(CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_DEFAULT, ConfigDef.Importance.LOW, CAMEL_SOURCE_SNAPSHOT_SHOPIFY_API_VERSION_DOC);
+        // Stripe snapshot config
+        conf.define(CAMEL_SOURCE_SNAPSHOT_STRIPE_API_KEY_CONF, ConfigDef.Type.PASSWORD, CAMEL_SOURCE_SNAPSHOT_STRIPE_API_KEY_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_SNAPSHOT_STRIPE_API_KEY_DOC);
         // Native CDC config
         conf.define(CAMEL_SOURCE_CDC_ENABLED_CONF, ConfigDef.Type.BOOLEAN, CAMEL_SOURCE_CDC_ENABLED_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_CDC_ENABLED_DOC);
         conf.define(CAMEL_SOURCE_CDC_CHANNELS_CONF, ConfigDef.Type.STRING, CAMEL_SOURCE_CDC_CHANNELS_DEFAULT, ConfigDef.Importance.MEDIUM, CAMEL_SOURCE_CDC_CHANNELS_DOC);

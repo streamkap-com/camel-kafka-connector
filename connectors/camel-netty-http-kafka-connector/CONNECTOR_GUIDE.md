@@ -20,15 +20,16 @@ This connector receives webhook HTTP POST events from external applications (Zen
 2. [Zendesk Configuration](#2-zendesk-configuration)
 3. [Salesforce Configuration](#3-salesforce-configuration)
 4. [Shopify Configuration](#4-shopify-configuration)
-5. [Fan-out Configuration](#5-fan-out-configuration)
-6. [Detail Flattening](#6-detail-flattening)
-7. [Event Field Control](#7-event-field-control)
-8. [Message Keys](#8-message-keys)
-9. [Delete Detection](#9-delete-detection)
-10. [Source Dead Letter Queue](#10-source-dead-letter-queue)
-11. [Snapshot](#11-snapshot)
-12. [Full Configuration Reference](#12-full-configuration-reference)
-13. [Example Configurations](#13-example-configurations)
+5. [Stripe Configuration](#5-stripe-configuration)
+6. [Fan-out Configuration](#6-fan-out-configuration)
+7. [Detail Flattening](#7-detail-flattening)
+8. [Event Field Control](#8-event-field-control)
+9. [Message Keys](#9-message-keys)
+10. [Delete Detection](#10-delete-detection)
+11. [Source Dead Letter Queue](#11-source-dead-letter-queue)
+12. [Snapshot](#12-snapshot)
+13. [Full Configuration Reference](#13-full-configuration-reference)
+14. [Example Configurations](#14-example-configurations)
 
 ---
 
@@ -41,7 +42,7 @@ The connector inspects incoming JSON payloads to determine the target Kafka topi
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `camel.source.payload.router.enabled` | Boolean | `false` | Enable payload-based routing |
-| `camel.source.payload.router.type` | String | — | Provider type: `zendesk`, `salesforce`, `shopify` |
+| `camel.source.payload.router.type` | String | — | Provider type: `zendesk`, `salesforce`, `shopify`, `stripe` |
 | `camel.source.payload.router.topic.prefix` | String | `""` | Prefix for all generated topic names |
 | `camel.source.payload.router.unknown.type.behavior` | String | `DEFAULT_TOPIC` | How to handle unrecognized events: `DEFAULT_TOPIC`, `SKIP`, `FAIL` |
 | `camel.source.payload.router.unknown.type.default.topic` | String | `unknown` | Topic for unknown events (when behavior = DEFAULT_TOPIC) |
@@ -104,7 +105,28 @@ HMAC config: `camel.source.payload.router.shopify.hmac.secret` (Password)
 
 ---
 
-## 5. Fan-out Configuration
+## 5. Stripe Configuration
+
+Supported when `camel.source.payload.router.type=stripe`. Routes events based on the `type` field in the JSON body (e.g., `customer.created`). Extracts `data.object` as the Kafka record value. Includes signature verification.
+
+| Resource | Generated Topic | Key | Example Event Types |
+|---|---|---|---|
+| customer | `{prefix}customer` | `{id}` | `customer.created`, `customer.subscription.updated` |
+| payment_intent | `{prefix}payment_intent` | `{id}` | `payment_intent.succeeded`, `payment_intent.payment_failed` |
+| charge | `{prefix}charge` | `{id}` | `charge.succeeded`, `charge.refunded`, `charge.dispute.created` |
+| invoice | `{prefix}invoice` | `{id}` | `invoice.paid`, `invoice.finalized` |
+| product | `{prefix}product` | `{id}` | `product.created`, `product.updated` |
+| payout | `{prefix}payout` | `{id}` | `payout.paid`, `payout.failed` |
+
+Fan-out: `invoice.lines`, `charge.refunds`, `subscription.items`
+
+Signature config: `camel.source.payload.router.stripe.signing.secret` (Password, `whsec_xxx`)
+
+**Full documentation**: [docs/STRIPE.md](docs/STRIPE.md)
+
+---
+
+## 6. Fan-out Configuration
 
 Fan-out splits nested arrays into separate Kafka topics, creating one record per array element.
 
@@ -158,7 +180,7 @@ Fan-out topics do NOT generate tombstone records when items are removed. For exa
 
 ---
 
-## 6. Detail Flattening
+## 7. Detail Flattening
 
 Promotes nested `detail` fields to top-level, avoiding nested JSON in the output.
 
@@ -202,7 +224,7 @@ For Salesforce CDC with empty prefix (`""`), fields are promoted directly since 
 
 ---
 
-## 7. Event Field Control
+## 8. Event Field Control
 
 Controls whether the `event` field (Zendesk) or `ChangeEventHeader` (Salesforce) is included in output.
 
@@ -221,7 +243,7 @@ Controls whether the `event` field (Zendesk) or `ChangeEventHeader` (Salesforce)
 
 ---
 
-## 8. Message Keys
+## 9. Message Keys
 
 Message keys are set automatically based on the provider's data model. No configuration needed.
 
@@ -233,7 +255,7 @@ When `flatten.detail.prefix` is changed (e.g., to `d_`), key field names update 
 
 ---
 
-## 9. Delete Detection and Operation Type
+## 10. Delete Detection and Operation Type
 
 Every record includes:
 - `__deleted` (boolean, in value) — `true` for deletes, `false` for everything else
@@ -285,9 +307,19 @@ Every record includes:
 | `cancelled`, `fulfilled`, `paid`, etc. | `false` | `u` |
 | Snapshot | `false` | `r` |
 
+### Stripe Delete Rules
+
+| Action | `__deleted` | `__op` |
+|--------|------------|--------|
+| `created` | `false` | `c` |
+| `updated` | `false` | `u` |
+| `deleted` | `true` | `d` |
+| `succeeded`, `failed`, `canceled`, `paid`, etc. | `false` | `u` |
+| Snapshot | `false` | `r` |
+
 ---
 
-## 10. Source Dead Letter Queue
+## 11. Source Dead Letter Queue
 
 Captures errored records that would otherwise be lost or crash the connector.
 
@@ -327,7 +359,7 @@ errors.log.include.messages=true
 
 ---
 
-## 11. Snapshot
+## 12. Snapshot
 
 Debezium-style snapshot support for initial data load and on-demand backfill.
 
@@ -339,6 +371,7 @@ Snapshot requires a provider-specific `ChunkReader` implementation to query the 
 |----------|-----------------|-------------|------|
 | Salesforce | Yes | SOQL REST API with Id-based pagination | OAuth2 (client credentials or password) |
 | Shopify | Yes | GraphQL Admin API with cursor pagination (250/page) | Static token or client credentials (24h refresh) |
+| Stripe | Yes | REST List APIs with cursor pagination (100/page) | API secret key (sk_live_xxx) |
 | Zendesk | Not yet | Planned (Incremental Export API) | — |
 
 If you configure `snapshot.mode=initial` or `snapshot.signal.topic` for a provider without snapshot support (e.g., Zendesk), the connector logs a warning and continues with webhooks only. No thread pools, signal consumers, or coordinators are started.
@@ -623,7 +656,7 @@ The snapshot output queue is bounded (10,000 records max). When full, snapshot t
 
 ---
 
-## 12. Full Configuration Reference
+## 13. Full Configuration Reference
 
 ### Payload Routing
 
@@ -644,6 +677,13 @@ The snapshot output queue is bounded (10,000 records max). When full, snapshot t
 | Property | Type | Default |
 |----------|------|---------|
 | `camel.source.payload.router.shopify.hmac.secret` | Password | `""` |
+
+### Stripe
+
+| Property | Type | Default |
+|----------|------|---------|
+| `camel.source.payload.router.stripe.signing.secret` | Password | `""` |
+| `camel.source.snapshot.stripe.api.key` | Password | `""` |
 
 ### Native CDC
 
@@ -686,7 +726,7 @@ The snapshot output queue is bounded (10,000 records max). When full, snapshot t
 
 ---
 
-## 13. Example Configurations
+## 14. Example Configurations
 
 ### Zendesk — Upsert Mode (State Table)
 

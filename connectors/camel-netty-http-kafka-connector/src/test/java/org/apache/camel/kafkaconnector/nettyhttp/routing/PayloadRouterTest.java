@@ -7,6 +7,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.camel.kafkaconnector.nettyhttp.routing.shopify.ShopifyPayloadStrategy;
+import org.apache.camel.kafkaconnector.nettyhttp.routing.stripe.StripePayloadStrategy;
 import org.apache.camel.kafkaconnector.nettyhttp.routing.zendesk.ZendeskPayloadStrategy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -330,5 +331,48 @@ public class PayloadRouterTest {
         assertEquals("shopify_orders", records.get(0).getTopic());
         assertEquals("shopify_orders_line_items", records.get(1).getTopic());
         assertEquals("shopify_orders_line_items", records.get(2).getTopic());
+    }
+
+    // --- Stripe Strategy Factory ---
+
+    @Test
+    void testCreateStrategyStripe() {
+        PayloadRoutingStrategy strategy = PayloadRouter.createStrategy("stripe");
+        assertNotNull(strategy);
+        assertTrue(strategy instanceof StripePayloadStrategy);
+    }
+
+    @Test
+    void testCreateStrategyStripeCaseInsensitive() {
+        PayloadRoutingStrategy strategy = PayloadRouter.createStrategy("STRIPE");
+        assertNotNull(strategy);
+        assertTrue(strategy instanceof StripePayloadStrategy);
+    }
+
+    // --- Stripe End-to-End Pipeline ---
+
+    @Test
+    void testStripeCustomerCreatePipeline() {
+        PayloadRoutingStrategy strategy = PayloadRouter.createStrategy("stripe");
+        strategy.configure("stripe_", UnknownTypeBehavior.DEFAULT_TOPIC, "unknown");
+        PayloadRouter stripeRouter = new PayloadRouter(strategy);
+
+        String json = "{"
+                + "\"id\":\"evt_test\","
+                + "\"object\":\"event\","
+                + "\"type\":\"customer.created\","
+                + "\"created\":1680064028,"
+                + "\"livemode\":false,"
+                + "\"data\":{\"object\":{\"id\":\"cus_test123\",\"email\":\"test@example.com\"}}"
+                + "}";
+
+        List<RoutedRecord> records = stripeRouter.route(json);
+
+        assertEquals(1, records.size());
+        assertEquals("stripe_customer", records.get(0).getTopic());
+        assertEquals("customer.created", records.get(0).getEventType());
+        assertTrue(records.get(0).hasKey());
+        assertEquals("cus_test123", records.get(0).getKeyFields().get("id"));
+        assertEquals("c", records.get(0).getOp());
     }
 }

@@ -6,6 +6,8 @@ import org.apache.camel.kafkaconnector.nettyhttp.snapshot.salesforce.SalesforceA
 import org.apache.camel.kafkaconnector.nettyhttp.snapshot.salesforce.SalesforceChunkReader;
 import org.apache.camel.kafkaconnector.nettyhttp.snapshot.shopify.ShopifyAuthClient;
 import org.apache.camel.kafkaconnector.nettyhttp.snapshot.shopify.ShopifyChunkReader;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.stripe.StripeAuthClient;
+import org.apache.camel.kafkaconnector.nettyhttp.snapshot.stripe.StripeChunkReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,6 +36,8 @@ public class ChunkReaderFactory {
                 return createSalesforceReader(config);
             case "shopify":
                 return createShopifyReader(config);
+            case "stripe":
+                return createStripeReader(config);
             case "zendesk":
                 // Zendesk chunk reader not yet implemented
                 LOG.warn("Zendesk snapshot ChunkReader not yet implemented. Signal-triggered snapshots will not work.");
@@ -83,5 +87,17 @@ public class ChunkReaderFactory {
 
         ShopifyAuthClient authClient = new ShopifyAuthClient(storeUrl, accessToken, apiVersion, clientId, clientSecret);
         return new ShopifyChunkReader(authClient);
+    }
+
+    private static ChunkReader createStripeReader(Map<String, String> config) {
+        String apiKey = config.getOrDefault("camel.source.snapshot.stripe.api.key", "");
+
+        if (apiKey.isEmpty()) {
+            LOG.warn("Stripe snapshot API key not configured. Snapshot will not work.");
+            return null;
+        }
+
+        StripeAuthClient authClient = new StripeAuthClient(apiKey);
+        return new StripeChunkReader(authClient);
     }
 }
